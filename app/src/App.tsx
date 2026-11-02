@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChecksPanel, LoginScreen, SetupScreen } from "./Auth";
+import { ReceivePage } from "./Receive";
 import {
   LOCKED_EVENT,
   type AuthStatus,
@@ -18,7 +19,7 @@ import {
   type WalletView,
 } from "./api";
 
-type Page = "portfolio" | "activity" | "wallets" | "checks" | "about";
+type Page = "portfolio" | "receive" | "activity" | "wallets" | "checks" | "about";
 
 const STATUS_TEXT: Record<BalanceStatus, string> = {
   verified: "Verified (2+ sources agree)",
@@ -719,7 +720,7 @@ function MainApp({ onLock }: { onLock: () => void }) {
           Watch-Only Wallet <span className="tag">no keys on this computer</span>
         </div>
         <nav>
-          {(["portfolio", "activity", "wallets", "checks", "about"] as Page[]).map((p) => (
+          {(["portfolio", "receive", "activity", "wallets", "checks", "about"] as Page[]).map((p) => (
             <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
               {p[0].toUpperCase() + p.slice(1)}
             </button>
@@ -731,6 +732,7 @@ function MainApp({ onLock }: { onLock: () => void }) {
       </header>
       <main>
         {page === "portfolio" && <PortfolioPage state={portfolio} />}
+        {page === "receive" && <ReceivePage />}
         {page === "activity" && <ActivityPage />}
         {page === "wallets" && <WalletsPage onChanged={portfolio.markStale} />}
         {page === "checks" && (

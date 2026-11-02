@@ -366,6 +366,134 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Receive (§7.2)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct ReceiveView {
+    network: &'static str,
+    /// Assets that can be sent to this address, each stating its network.
+    assets: Vec<&'static str>,
+    address: String,
+    qr: crate::qr::Qr,
+    /// Bitcoin account wallets: which receive address this is.
+    btc_index: Option<u32>,
+    /// What to compare on the signer's screen.
+    signer_hint: String,
+    warnings: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn get_receive(
+    state: State<'_, AppState>,
+    id: String,
+    network: String,
+    skip: u32,
+) -> Result<ReceiveView, String> {
+    if id.len() > 32 {
+        return Err("Unknown wallet.".into());
+    }
+    let registry = read_registry(&state)?;
+    let wallet = registry
+        .wallets
+        .iter()
+        .find(|w| w.id.as_str() == id)
+        .ok_or_else(|| "Unknown wallet.".to_owned())?;
+    let mut warnings = Vec::new();
+    match wallet.tier {
+        Tier::Vault => warnings.push(
+            "Vault: only receive from your own wallets. Never give this address to anyone else.".to_owned(),
+        ),
+        Tier::WatchOnly => warnings.push(
+            "Watch-only wallet: its keys are not on your signer tablet. Only use this address if you control that wallet elsewhere.".to_owned(),
+        ),
+        _ => {}
+    }
+    let (net, assets, address, btc_index, signer_hint) = match network.as_str() {
+        "bitcoin" => match &wallet.btc {
+            Some(BtcWatch::AccountXpub(acct)) => {
+                let sources = Sources::new(&state.http, &state.config);
+                let r = tokio::time::timeout(
+                    ACTIVITY_TIME_LIMIT,
+                    wallet_core::receive::fresh_btc_address(&sources, &acct.0, skip),
+                )
+                .await
+                .map_err(|_| "The providers didn't answer within 30 seconds.".to_owned())??;
+                if r.check == wallet_core::receive::UnusedCheck::Unverified {
+                    warnings.push(
+                        "Only one provider confirmed this address is unused. It's still your address, but it may have been used before.".to_owned(),
+                    );
+                }
+                let hint = format!(
+                    "On the signer, open this wallet's Bitcoin receive address #{} (path …/0/{}) and compare it.",
+                    r.index, r.index
+                );
+                (
+                    "Bitcoin",
+                    vec![wallet_types::Asset::Btc.label()],
+                    r.address,
+                    Some(r.index),
+                    hint,
+                )
+            }
+            Some(BtcWatch::Address(a)) => {
+                warnings.push(
+                    "This wallet is watched by a single Bitcoin address, so it can't give a fresh address each time.".to_owned(),
+                );
+                (
+                    "Bitcoin",
+                    vec![wallet_types::Asset::Btc.label()],
+                    a.to_string(),
+                    None,
+                    "On the signer, open this wallet's Bitcoin address and compare it.".to_owned(),
+                )
+            }
+            None => return Err("This wallet has no Bitcoin address.".into()),
+        },
+        "ethereum" => {
+            let a = wallet
+                .eth
+                .ok_or_else(|| "This wallet has no Ethereum address.".to_owned())?;
+            (
+                "Ethereum",
+                vec![
+                    wallet_types::Asset::UsdtErc20.label(),
+                    wallet_types::Asset::Eth.label(),
+                ],
+                a.to_checksum(),
+                None,
+                "On the signer, open this wallet's Ethereum address and compare it.".to_owned(),
+            )
+        }
+        "tron" => {
+            let a = wallet
+                .tron
+                .ok_or_else(|| "This wallet has no TRON address.".to_owned())?;
+            (
+                "TRON",
+                vec![
+                    wallet_types::Asset::UsdtTrc20.label(),
+                    wallet_types::Asset::Trx.label(),
+                ],
+                a.to_base58(),
+                None,
+                "On the signer, open this wallet's TRON address and compare it.".to_owned(),
+            )
+        }
+        _ => return Err("Unknown network.".into()),
+    };
+    Ok(ReceiveView {
+        network: net,
+        assets,
+        qr: crate::qr::matrix(&address)?,
+        address,
+        btc_index,
+        signer_hint,
+        warnings,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Login (§9.8)
 // ---------------------------------------------------------------------------
 
@@ -489,7 +617,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            13,
+            14,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "unlock",
     "lock",
     "startup_checks",
+    "get_receive",
 ];
 
 fn main() {

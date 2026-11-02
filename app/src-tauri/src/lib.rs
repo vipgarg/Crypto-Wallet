@@ -1,6 +1,7 @@
 //! Watch-only wallet desktop app. Holds no seeds or private keys.
 
 pub mod commands;
+pub mod qr;
 pub mod session;
 
 use std::sync::Arc;
@@ -61,6 +62,7 @@ pub fn run() {
             commands::unlock,
             commands::lock,
             commands::startup_checks,
+            commands::get_receive,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

@@ -149,16 +149,11 @@ impl SessionState {
         }
         let secret = totp::new_secret().map_err(|_| INTERNAL.to_owned())?;
         let uri = totp::otpauth_uri(&secret, "pc");
-        let qr = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::M)
-            .map_err(|_| INTERNAL.to_owned())?;
+        let qr = crate::qr::matrix(&uri)?;
         let info = SetupInfo {
             secret: totp::secret_base32(&secret).to_string(),
-            qr_size: qr.width(),
-            qr_modules: qr
-                .to_colors()
-                .into_iter()
-                .map(|c| c == qrcode::Color::Dark)
-                .collect(),
+            qr_size: qr.size,
+            qr_modules: qr.modules,
         };
         *self.pending_totp.lock().map_err(|_| INTERNAL.to_owned())? = Some(secret);
         Ok(info)

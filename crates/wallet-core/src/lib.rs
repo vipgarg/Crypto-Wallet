@@ -3,6 +3,7 @@
 
 pub mod activity;
 pub mod portfolio;
+pub mod receive;
 pub mod registry;
 
 pub use portfolio::{

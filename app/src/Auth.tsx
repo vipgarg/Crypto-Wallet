@@ -68,7 +68,7 @@ export function ChecksPanel({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function QrCode({ size, modules }: { size: number; modules: boolean[] }) {
+export function QrCode({ size, modules }: { size: number; modules: boolean[] }) {
   const quiet = 4;
   const total = size + quiet * 2;
   const rects = [];

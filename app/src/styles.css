@@ -177,6 +177,16 @@ button.lock-btn { margin-left: 12px; background: transparent; color: var(--text)
 .check-fail .check-icon { color: var(--bad); }
 .check-unknown .check-icon, .check-not_applicable .check-icon { color: var(--muted); }
 
+/* Receive */
+.network-banner { font-size: 17px; padding: 10px 12px; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); margin-bottom: 12px; }
+.receive-body { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.receive-text { flex: 1; min-width: 260px; }
+.big-address { font-size: 18px; line-height: 1.6; word-break: break-word; margin: 6px 0 12px; }
+.big-address strong { color: var(--accent); }
+.receive-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.verify-box { margin-top: 16px; padding: 12px; border-left: 4px solid var(--accent); background: var(--bg); border-radius: 4px; }
+.verify-box h3 { margin-bottom: 4px; }
+
 /* Tauri's isolation-pattern frame (ARCHITECTURE.md §9.1). It must stay in the
    page to filter IPC, but it has no visible content. */
 iframe#__tauri_isolation__ { display: none; }

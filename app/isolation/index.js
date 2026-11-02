@@ -16,6 +16,7 @@ const ALLOWED = new Set([
   "unlock",
   "lock",
   "startup_checks",
+  "get_receive",
 ]);
 
 window.__TAURI_ISOLATION_HOOK__ = (payload) => {

@@ -180,6 +180,18 @@ export interface SystemCheck {
   blocks_sends: boolean;
 }
 
+export type ReceiveNetwork = "bitcoin" | "ethereum" | "tron";
+
+export interface ReceiveView {
+  network: string;
+  assets: string[];
+  address: string;
+  qr: { size: number; modules: boolean[] };
+  btc_index: number | null;
+  signer_hint: string;
+  warnings: string[];
+}
+
 /** Fired when Rust reports the session is locked, so the app shows login. */
 export const LOCKED_EVENT = "wallet-locked";
 
@@ -208,6 +220,8 @@ export const api = {
   unlock: (password: string, code: string) => call<void>("unlock", { password, code }),
   lock: () => call<void>("lock"),
   startupChecks: () => call<SystemCheck[]>("startup_checks"),
+  getReceive: (id: string, network: ReceiveNetwork, skip: number) =>
+    call<ReceiveView>("get_receive", { id, network, skip }),
 };
 
 export function errorText(e: unknown): string {
