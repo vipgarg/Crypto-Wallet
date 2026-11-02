@@ -31,6 +31,28 @@ pub trait HttpClient: Send + Sync {
     ) -> impl Future<Output = Result<Value, HttpError>> + Send;
 }
 
+/// Explain a network failure with its underlying cause (timeout, refused,
+/// DNS, TLS…), not just "error sending request".
+fn describe(e: &reqwest::Error) -> String {
+    let kind = if e.is_timeout() {
+        "timed out"
+    } else if e.is_connect() {
+        "could not connect"
+    } else {
+        "request failed"
+    };
+    let mut cause = None;
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        cause = Some(s.to_string());
+        src = s.source();
+    }
+    match cause {
+        Some(c) if !c.is_empty() => format!("{kind}: {}", c.chars().take(160).collect::<String>()),
+        _ => kind.to_owned(),
+    }
+}
+
 /// Real client: HTTPS only, no redirects, short timeouts, size-limited bodies.
 #[derive(Clone)]
 pub struct ReqwestClient {
@@ -64,7 +86,7 @@ impl ReqwestClient {
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| HttpError::Network(e.to_string()))?;
+            .map_err(|e| HttpError::Network(describe(&e)))?;
         if bytes.len() > MAX_RESPONSE_BYTES {
             return Err(HttpError::TooLarge);
         }
@@ -79,7 +101,7 @@ impl HttpClient for ReqwestClient {
             .get(url)
             .send()
             .await
-            .map_err(|e| HttpError::Network(e.without_url().to_string()))?;
+            .map_err(|e| HttpError::Network(describe(&e)))?;
         let body = Self::read_body(resp).await?;
         String::from_utf8(body).map_err(|_| HttpError::Body)
     }
@@ -91,7 +113,7 @@ impl HttpClient for ReqwestClient {
             .json(body)
             .send()
             .await
-            .map_err(|e| HttpError::Network(e.without_url().to_string()))?;
+            .map_err(|e| HttpError::Network(describe(&e)))?;
         let body = Self::read_body(resp).await?;
         serde_json::from_slice(&body).map_err(|_| HttpError::Body)
     }

@@ -7,6 +7,8 @@
 # Provider rules (§5.5):
 # - At least 2 providers per network, from DIFFERENT companies on different
 #   infrastructure. A single provider's answer is shown as "unverified".
+#   A third provider keeps balances verifiable when one is down; all answers
+#   must still be identical (any difference = "sources disagree").
 # - Providers only supply data. Contract addresses below are pinned here and
 #   are never taken from a provider.
 # - HTTPS only.
@@ -47,11 +49,18 @@ base_url = "https://ethereum-rpc.publicnode.com"
 operator = "PublicNode (Allnodes)"
 
 [[providers]]
-id = "llamarpc-eth"
+id = "drpc-eth"
 network = "ethereum"
 kind = "eth_json_rpc"
-base_url = "https://eth.llamarpc.com"
-operator = "LlamaNodes"
+base_url = "https://eth.drpc.org"
+operator = "dRPC"
+
+[[providers]]
+id = "1rpc-eth"
+network = "ethereum"
+kind = "eth_json_rpc"
+base_url = "https://1rpc.io/eth"
+operator = "1RPC (Automata Network)"
 
 [[providers]]
 id = "trongrid"

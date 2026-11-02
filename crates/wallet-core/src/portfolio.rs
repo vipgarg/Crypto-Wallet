@@ -146,6 +146,9 @@ pub const BTC_BATCH: u32 = 5;
 fn timings_text(t: &[ProviderTiming]) -> String {
     t.iter()
         .map(|x| {
+            if x.skipped {
+                return format!("{} skipped (kept failing)", x.provider);
+            }
             let secs = format!("{}.{} s", x.millis / 1000, (x.millis % 1000) / 100);
             format!("{} {} {}", x.provider, secs, if x.ok { "✓" } else { "✗" })
         })
@@ -417,7 +420,7 @@ pub async fn build_portfolio<H: HttpClient>(
     registry: &Registry,
     progress: &dyn ProgressSink,
 ) -> Portfolio {
-    let src = Sources { http, config };
+    let src = Sources::new(http, config);
     let mut wallets = Vec::new();
     for w in &registry.wallets {
         progress.step(
@@ -653,13 +656,18 @@ mod tests {
             .find(|x| x.asset == Asset::Btc)
             .expect("btc");
         assert_eq!(btc.status, BalanceStatus::Unavailable);
-        // Stopped after the first batch instead of hammering all 40+.
+        // Stopped within the first batch instead of hammering all 40+, and
+        // each dead provider was asked at most BREAKER_THRESHOLD times.
         let btc_requests = http
             .requested()
             .iter()
             .filter(|r| r.contains("/address/"))
             .count();
-        assert_eq!(btc_requests, (BTC_BATCH * 2) as usize);
+        assert!(btc_requests <= (BTC_BATCH * 2) as usize, "{btc_requests}");
+        assert!(
+            btc_requests <= (data_sources::fetch::BREAKER_THRESHOLD * 2) as usize,
+            "{btc_requests}"
+        );
     }
 
     #[derive(Default)]

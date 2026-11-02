@@ -4,7 +4,9 @@ use chain_btc::esplora::{self, AddressStats};
 use chain_btc::BtcAddress;
 use chain_eth::{rpc, EthAddress};
 use chain_tron::{api, TronAddress};
+use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use futures_util::future::join_all;
@@ -22,6 +24,8 @@ pub enum FetchError {
     Http(#[from] HttpError),
     #[error("could not parse provider answer: {0}")]
     Parse(String),
+    #[error("skipped: failed {0} times in a row during this refresh")]
+    Skipped(u32),
 }
 
 fn parse_err(e: impl std::fmt::Display) -> FetchError {
@@ -109,6 +113,8 @@ pub struct ProviderTiming {
     pub provider: String,
     pub millis: u64,
     pub ok: bool,
+    /// Not asked at all, because it kept failing during this refresh.
+    pub skipped: bool,
 }
 
 /// A cross-checked answer plus per-provider timings (shown in the UI's
@@ -119,47 +125,88 @@ pub struct Timed<T> {
     pub timings: Vec<ProviderTiming>,
 }
 
-/// Ask every provider **at the same time** and cross-check the answers.
-async fn ask_all<'p, T, F, Fut>(providers: Vec<&'p ProviderConfig>, ask: F) -> Timed<T>
-where
-    T: PartialEq + Clone,
-    F: Fn(&'p ProviderConfig) -> Fut,
-    Fut: Future<Output = Result<T, FetchError>>,
-{
-    let futures = providers.into_iter().map(|p| {
-        let fut = ask(p);
-        async move {
-            let start = Instant::now();
-            let r = fut.await;
-            (p.id.clone(), start.elapsed(), r)
+/// After this many failures in a row, a provider is skipped for the rest of
+/// the refresh, so one dead provider can't make every check wait for a timeout.
+pub const BREAKER_THRESHOLD: u32 = 3;
+
+/// Per-refresh failure counter for each provider.
+#[derive(Default)]
+struct Breaker(Mutex<HashMap<String, u32>>);
+
+impl Breaker {
+    fn is_open(&self, id: &str) -> bool {
+        self.0
+            .lock()
+            .map(|m| m.get(id).copied().unwrap_or(0) >= BREAKER_THRESHOLD)
+            .unwrap_or(false)
+    }
+
+    fn record(&self, id: &str, ok: bool) {
+        if let Ok(mut m) = self.0.lock() {
+            let n = m.entry(id.to_owned()).or_insert(0);
+            *n = if ok { 0 } else { n.saturating_add(1) };
         }
-    });
-    let answers = join_all(futures).await;
-    let timings = answers
-        .iter()
-        .map(|(id, elapsed, r)| ProviderTiming {
-            provider: id.clone(),
-            millis: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-            ok: r.is_ok(),
-        })
-        .collect();
-    let result = cross_check(answers.into_iter().map(|(id, _, r)| (id, r)).collect());
-    Timed { result, timings }
+    }
 }
 
 /// Cross-checked queries across every provider of the relevant network.
+/// Create one per refresh: the failure counters start empty each time.
 pub struct Sources<'a, H: HttpClient> {
     pub http: &'a H,
     pub config: &'a NetworkConfig,
+    breaker: Breaker,
 }
 
-impl<H: HttpClient> Sources<'_, H> {
-    fn providers(&self, n: Network) -> Vec<&ProviderConfig> {
-        self.config.providers_for(n).collect()
+impl<'a, H: HttpClient> Sources<'a, H> {
+    pub fn new(http: &'a H, config: &'a NetworkConfig) -> Self {
+        Self {
+            http,
+            config,
+            breaker: Breaker::default(),
+        }
+    }
+
+    /// Ask every provider of `network` **at the same time** and cross-check
+    /// the answers. Providers that keep failing are skipped (and counted as
+    /// failed, so the result can't become "verified" without them).
+    async fn ask_all<'s, T, F, Fut>(&'s self, network: Network, ask: F) -> Timed<T>
+    where
+        T: PartialEq + Clone,
+        F: Fn(&'s ProviderConfig) -> Fut,
+        Fut: Future<Output = Result<T, FetchError>>,
+    {
+        let futures = self.config.providers_for(network).map(|p| {
+            let skipped = self.breaker.is_open(&p.id);
+            let fut = (!skipped).then(|| ask(p));
+            async move {
+                let start = Instant::now();
+                let r = match fut {
+                    Some(f) => {
+                        let r = f.await;
+                        self.breaker.record(&p.id, r.is_ok());
+                        r
+                    }
+                    None => Err(FetchError::Skipped(BREAKER_THRESHOLD)),
+                };
+                (p.id.clone(), start.elapsed(), r, skipped)
+            }
+        });
+        let answers = join_all(futures).await;
+        let timings = answers
+            .iter()
+            .map(|(id, elapsed, r, skipped)| ProviderTiming {
+                provider: id.clone(),
+                millis: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+                ok: r.is_ok(),
+                skipped: *skipped,
+            })
+            .collect();
+        let result = cross_check(answers.into_iter().map(|(id, _, r, _)| (id, r)).collect());
+        Timed { result, timings }
     }
 
     pub async fn btc_address_timed(&self, addr: &BtcAddress) -> Timed<ConfirmedBtcFacts> {
-        ask_all(self.providers(Network::Bitcoin), |p| async move {
+        self.ask_all(Network::Bitcoin, |p| async move {
             btc_address_stats(self.http, p, addr)
                 .await
                 .map(ConfirmedBtcFacts::from)
@@ -168,30 +215,26 @@ impl<H: HttpClient> Sources<'_, H> {
     }
 
     pub async fn eth_timed(&self, addr: &EthAddress) -> Timed<u128> {
-        ask_all(self.providers(Network::Ethereum), |p| {
-            eth_balance(self.http, p, addr)
-        })
-        .await
+        self.ask_all(Network::Ethereum, |p| eth_balance(self.http, p, addr))
+            .await
     }
 
     pub async fn usdt_erc20_timed(&self, holder: &EthAddress) -> Timed<u128> {
         let token = &self.config.usdt_erc20;
-        ask_all(self.providers(Network::Ethereum), |p| {
+        self.ask_all(Network::Ethereum, |p| {
             erc20_balance(self.http, p, token, holder)
         })
         .await
     }
 
     pub async fn trx_timed(&self, addr: &TronAddress) -> Timed<u128> {
-        ask_all(self.providers(Network::Tron), |p| {
-            trx_balance(self.http, p, addr)
-        })
-        .await
+        self.ask_all(Network::Tron, |p| trx_balance(self.http, p, addr))
+            .await
     }
 
     pub async fn usdt_trc20_timed(&self, holder: &TronAddress) -> Timed<u128> {
         let token = &self.config.usdt_trc20;
-        ask_all(self.providers(Network::Tron), |p| {
+        self.ask_all(Network::Tron, |p| {
             trc20_balance(self.http, p, token, holder)
         })
         .await
@@ -296,10 +339,7 @@ mod tests {
                 json!({"result": {"result": true}, "constant_result": [word(25_000_000)]}),
             );
         }
-        let s = Sources {
-            http: &http,
-            config: &config,
-        };
+        let s = Sources::new(&http, &config);
         assert_eq!(s.usdt_trc20(&holder).await.value(), Some(&25_000_000));
         assert!(s.usdt_trc20(&holder).await.is_verified());
     }
@@ -319,10 +359,7 @@ mod tests {
                 json!({"jsonrpc": "2.0", "id": 1, "result": format!("0x{}", word(n))}),
             );
         }
-        let s = Sources {
-            http: &http,
-            config: &config,
-        };
+        let s = Sources::new(&http, &config);
         assert!(matches!(
             s.usdt_erc20(&holder).await,
             CrossChecked::Disagreement { .. }
@@ -344,15 +381,49 @@ mod tests {
         let ps: Vec<_> = config.providers_for(Network::Bitcoin).collect();
         http.on_get(&format!("{}/address/{}", ps[0].base_url, addr), &body(0));
         http.on_get(&format!("{}/address/{}", ps[1].base_url, addr), &body(1));
-        let s = Sources {
-            http: &http,
-            config: &config,
-        };
+        let s = Sources::new(&http, &config);
         let r = s.btc_address(&addr).await;
         assert!(r.is_verified(), "{r:?}");
         assert_eq!(r.value().map(|f| f.confirmed_sats), Some(5000));
         // Only individual addresses are requested, never an xpub.
         assert!(http.requested().iter().all(|u| !u.contains("pub")));
+    }
+
+    #[tokio::test]
+    async fn failing_provider_is_skipped_but_never_counted_as_agreeing() {
+        let config = NetworkConfig::embedded().expect("config");
+        let addr: TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("addr");
+        let mut http = MockHttp::default();
+        let ps: Vec<_> = config.providers_for(Network::Tron).collect();
+        // Only the first provider answers; the second always fails.
+        http.on_post(
+            &format!("{}{}", ps[0].base_url, api::GET_ACCOUNT_PATH),
+            &api::get_account(&addr),
+            json!({"balance": 7}),
+        );
+        let s = Sources::new(&http, &config);
+        for _ in 0..BREAKER_THRESHOLD {
+            let t = s.trx_timed(&addr).await;
+            assert!(t.timings.iter().all(|x| !x.skipped));
+        }
+        let before = http.requested().len();
+        let t = s.trx_timed(&addr).await;
+        // The dead provider wasn't asked again...
+        assert_eq!(http.requested().len(), before + 1);
+        assert!(t
+            .timings
+            .iter()
+            .any(|x| x.skipped && x.provider == ps[1].id));
+        // ...and the answer is still only "unverified", never "verified".
+        assert!(matches!(t.result, CrossChecked::Unverified { .. }));
+        // A new refresh (new Sources) tries it again.
+        let fresh = Sources::new(&http, &config);
+        assert!(fresh
+            .trx_timed(&addr)
+            .await
+            .timings
+            .iter()
+            .all(|x| !x.skipped));
     }
 
     #[tokio::test]
@@ -366,10 +437,7 @@ mod tests {
             &api::get_account(&addr),
             json!({"balance": 7}),
         );
-        let s = Sources {
-            http: &http,
-            config: &config,
-        };
+        let s = Sources::new(&http, &config);
         assert!(matches!(
             s.trx(&addr).await,
             CrossChecked::Unverified { value: 7, .. }
