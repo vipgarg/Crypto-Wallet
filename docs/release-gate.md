@@ -25,6 +25,13 @@ Evidence for the phase exit gates (ARCHITECTURE.md §11) and the release gates (
 |---|---|---|---|---|---|---|---|
 | 2026-11-02 | `cc03b6c` | TRON | third-party address picked from the USDT holders list (not recorded) | tronscan.org | USDT (TRC-20) and TRX, both "Verified" | ✅ Yes | Owner |
 
+### Activity (history) matches block explorer
+
+| Date | Build (commit) | Network | Address | Explorer | What was compared | Match | Checked by |
+|---|---|---|---|---|---|---|---|
+| 2026-11-02 | `5a51049` | TRON | third-party address (not recorded) | tronscan.org "Transfers" | USDT transfers: type, amount, counterparty | ✅ Yes | Owner |
+| 2026-11-02 | `0452a4f` | TRON | third-party address (not recorded) | tronscan.org "Transactions" | Account transactions: type, amount, counterparty | ✅ Yes | Owner |
+
 Still to do for this gate: Ethereum (compare with etherscan.io) and Bitcoin (compare with blockchair.com), and then each real wallet once it exists.
 
 ### Exit gate: other Phase 1 items
@@ -36,5 +43,5 @@ Still to do for this gate: Ethereum (compare with etherscan.io) and Bitcoin (com
 | Monitor heartbeat on both channels | ⏳ Not built |
 | Restoring an older `policy.db` is detected | ⏳ Not built |
 | Allowance and permission baselines recorded | ⏳ Not built |
-| Poisoning-style 0-value transfer detected and hidden | ⏳ Not built (needs transaction history) |
+| Poisoning-style 0-value transfer detected and hidden | 🔧 Built for TRON (`5a51049`, `0452a4f`; unit-tested with a real Base58 look-alike address). Live check with a testnet 0-value transfer still to do. Ethereum and Bitcoin history not built yet. |
 | No secret-handling code paths in the online app | ✅ By design; registry refuses seeds/private keys (tested) |
