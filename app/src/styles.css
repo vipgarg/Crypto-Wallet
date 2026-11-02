@@ -1,0 +1,123 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --text: #1c2430;
+  --muted: #5d6878;
+  --border: #dde2e8;
+  --accent: #2357c6;
+  --ok-bg: #e3f4e8;
+  --ok: #1d6b3a;
+  --warn-bg: #fff4d6;
+  --warn: #7a5600;
+  --bad-bg: #fde4e4;
+  --bad: #9b1c1c;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12161c;
+    --surface: #1b2129;
+    --text: #e6eaf0;
+    --muted: #9aa5b4;
+    --border: #2c3440;
+    --accent: #7aa2ff;
+    --ok-bg: #173523;
+    --ok: #8fd6a6;
+    --warn-bg: #3a2f10;
+    --warn: #f0cf7a;
+    --bad-bg: #3d1717;
+    --bad: #f3a3a3;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.brand { font-weight: 600; font-size: 16px; }
+.tag {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ok);
+  background: var(--ok-bg);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+nav button { margin-left: 4px; background: transparent; color: var(--text); border-color: transparent; }
+nav button.active { background: var(--accent); color: #fff; }
+main { max-width: 1040px; margin: 0 auto; padding: 16px 24px 48px; }
+h2 { margin: 8px 0; }
+h3 { margin: 0 0 8px; font-size: 15px; }
+button {
+  font: inherit;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.6; cursor: default; }
+button.danger { background: transparent; color: var(--bad); border-color: var(--bad); }
+.section-head { display: flex; align-items: center; justify-content: space-between; }
+.hint, .muted { color: var(--muted); }
+.muted { font-weight: 400; }
+.mono { font-family: var(--mono); word-break: break-all; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+}
+.balances { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.balance-main { display: flex; flex-direction: column; margin-bottom: 4px; }
+.amount { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.asset-label { color: var(--muted); font-size: 12px; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; }
+.badge-verified { background: var(--ok-bg); color: var(--ok); }
+.badge-unverified { background: var(--warn-bg); color: var(--warn); }
+.badge-disagreement, .badge-unavailable { background: var(--bad-bg); color: var(--bad); }
+.problems { margin: 4px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+.totals { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin: 12px 0; }
+.total { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.incomplete { color: var(--warn); font-size: 12px; }
+.error { background: var(--bad-bg); color: var(--bad); padding: 8px 12px; border-radius: 6px; }
+.warning { background: var(--warn-bg); color: var(--warn); padding: 8px 12px; border-radius: 6px; }
+.form label { display: block; margin-bottom: 10px; }
+.form input, .form select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 12px; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+table { width: 100%; border-collapse: collapse; background: var(--surface); }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+@media (max-width: 640px) {
+  header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  main { padding: 12px 16px 32px; }
+}
+/* Tauri's isolation-pattern frame (ARCHITECTURE.md §9.1). It must stay in the
+   page to filter IPC, but it has no visible content. */
+iframe#__tauri_isolation__ { display: none; }

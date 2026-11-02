@@ -1,0 +1,68 @@
+# Network configuration, version 1 (ARCHITECTURE.md §9.6).
+#
+# This file is compiled into the app, and the app shows its SHA-256 on the
+# About screen. Any change to it must go through a reviewed release.
+# (Release signing of this file is a later step; see §9.6.)
+#
+# Provider rules (§5.5):
+# - At least 2 providers per network, from DIFFERENT companies on different
+#   infrastructure. A single provider's answer is shown as "unverified".
+# - Providers only supply data. Contract addresses below are pinned here and
+#   are never taken from a provider.
+# - HTTPS only.
+#
+# STATUS: the provider URLs below are starting points. Before using real funds,
+# confirm on your own PC that each one answers, check who operates it, and
+# record the result in docs/release-gate.md. Replace any that don't work.
+
+version = 1
+
+[pinned]
+# USDT on Ethereum (ERC-20). Re-verify from 3 sources before each release
+# (Tether transparency page, Etherscan verified contract, bytecode hash).
+usdt_erc20 = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+eth_chain_id = 1
+# USDT on TRON (TRC-20). Verify against Tether's site and Tronscan.
+usdt_trc20 = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+
+[[providers]]
+id = "mempool-space"
+network = "bitcoin"
+kind = "esplora"
+base_url = "https://mempool.space/api"
+operator = "mempool.space"
+
+[[providers]]
+id = "blockstream"
+network = "bitcoin"
+kind = "esplora"
+base_url = "https://blockstream.info/api"
+operator = "Blockstream"
+
+[[providers]]
+id = "publicnode-eth"
+network = "ethereum"
+kind = "eth_json_rpc"
+base_url = "https://ethereum-rpc.publicnode.com"
+operator = "PublicNode (Allnodes)"
+
+[[providers]]
+id = "llamarpc-eth"
+network = "ethereum"
+kind = "eth_json_rpc"
+base_url = "https://eth.llamarpc.com"
+operator = "LlamaNodes"
+
+[[providers]]
+id = "trongrid"
+network = "tron"
+kind = "tron_http"
+base_url = "https://api.trongrid.io"
+operator = "TronGrid (TRON DAO)"
+
+[[providers]]
+id = "publicnode-tron"
+network = "tron"
+kind = "tron_http"
+base_url = "https://tron-rpc.publicnode.com"
+operator = "PublicNode (Allnodes)"

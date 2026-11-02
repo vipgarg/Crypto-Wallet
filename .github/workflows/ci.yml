@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-and-ui:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: System libraries for Tauri (Linux CI only)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: UI dependencies (no install scripts) and build
+        working-directory: app
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Tests
+        run: cargo test --workspace --locked
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: npm audit (production dependencies)
+        working-directory: app
+        run: npm audit --omit=dev
+
+  cargo-deny:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources

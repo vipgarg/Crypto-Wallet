@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wallet-types",
+    "crates/chain-eth",
+    "crates/chain-tron",
+    "crates/chain-btc",
+    "crates/data-sources",
+    "crates/wallet-core",
+    "app/src-tauri",
+]
+
+[workspace.package]
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+rust-version = "1.97"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+float_arithmetic = "deny"
+unwrap_used = "warn"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

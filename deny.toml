@@ -1,0 +1,19 @@
+# cargo-deny configuration (ARCHITECTURE.md §9.3).
+
+[graph]
+all-features = false
+
+[advisories]
+# Any RUSTSEC advisory against a dependency fails the check unless it is
+# reviewed and listed here with a reason.
+ignore = []
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

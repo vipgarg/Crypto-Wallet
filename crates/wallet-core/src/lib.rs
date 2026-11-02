@@ -1,0 +1,10 @@
+//! Watch-only wallet core: the wallet registry (public data only) and the
+//! cross-checked portfolio. There is no secret-handling code in this crate.
+
+pub mod portfolio;
+pub mod registry;
+
+pub use portfolio::{
+    build_portfolio, AssetBalance, AssetTotal, BalanceStatus, Portfolio, WalletPortfolio,
+};
+pub use registry::{BtcWatch, NewWalletInput, Registry, RegistryError, WatchWallet};

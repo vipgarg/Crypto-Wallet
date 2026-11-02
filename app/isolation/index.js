@@ -1,0 +1,19 @@
+// Tauri isolation pattern (ARCHITECTURE.md §9.1): every IPC message from the
+// UI passes through this sandboxed script before it reaches Rust. Anything not
+// on the reviewed command list is dropped here, as a second layer behind the
+// Rust-side capability allowlist.
+const ALLOWED = new Set([
+  "list_wallets",
+  "add_wallet",
+  "remove_wallet",
+  "get_portfolio",
+  "app_info",
+]);
+
+window.__TAURI_ISOLATION_HOOK__ = (payload) => {
+  if (!payload || typeof payload.cmd !== "string" || !ALLOWED.has(payload.cmd)) {
+    // Throwing stops Tauri's isolation script before the message is sent.
+    throw new Error("blocked: command is not on the reviewed list");
+  }
+  return payload;
+};
