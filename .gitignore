@@ -4,3 +4,4 @@ node_modules/
 *.log
 .DS_Store
 /app/src-tauri/gen
+/tools/uniffi-bindgen/target

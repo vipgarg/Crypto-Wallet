@@ -1,0 +1,14 @@
+# Build-time tool that generates the Kotlin bindings for crates/signer-ffi.
+# Kept outside the main workspace so its dependencies (code generator,
+# templates) are never part of the signer app. Its UniFFI version must match
+# crates/signer-ffi exactly.
+[package]
+name = "uniffi-bindgen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+uniffi = { version = "=0.29.5", features = ["cli"] }
