@@ -14,9 +14,11 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use chain_btc::BtcAddress;
+use data_sources::fetch::Sources;
 use data_sources::{NetworkConfig, ReqwestClient};
 use serde::Serialize;
 use tauri::State;
+use wallet_core::activity::{classify_tron, summarize, KnownAddress, WalletActivity};
 use wallet_core::{
     build_portfolio, BtcWatch, NewWalletInput, Portfolio, ProgressLevel, ProgressSink, Registry,
     WatchWallet,
@@ -234,6 +236,54 @@ pub async fn get_portfolio(state: State<'_, AppState>) -> Result<Portfolio, Stri
     })
 }
 
+/// History requests are a single call; give up after this long.
+const ACTIVITY_TIME_LIMIT: Duration = Duration::from_secs(30);
+
+#[tauri::command]
+pub async fn get_activity(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<WalletActivity, String> {
+    if id.len() > 32 {
+        return Err("Unknown wallet.".into());
+    }
+    let registry = with_registry(&state, |r| Ok(r.clone()))?;
+    let wallet = registry
+        .wallets
+        .iter()
+        .find(|w| w.id.as_str() == id)
+        .ok_or_else(|| "Unknown wallet.".to_owned())?;
+    let me = wallet.tron.ok_or_else(|| {
+        "Activity is available for TRON addresses for now. Ethereum and Bitcoin are next."
+            .to_owned()
+    })?;
+    // Every other TRON address you watch, for the look-alike check.
+    let own: Vec<KnownAddress> = registry
+        .wallets
+        .iter()
+        .filter_map(|w| {
+            w.tron.map(|address| KnownAddress {
+                address,
+                label: w.label.clone(),
+            })
+        })
+        .filter(|k| k.address != me)
+        .collect();
+    let sources = Sources::new(&state.http, &state.config);
+    let history = tokio::time::timeout(ACTIVITY_TIME_LIMIT, sources.tron_history(&me))
+        .await
+        .map_err(|_| "The history provider didn't answer within 30 seconds.".to_owned())?
+        .map_err(|e| format!("Couldn't load history: {e}"))?;
+    let entries = classify_tron(&me, &own, &state.config.usdt_trc20, &history.events);
+    Ok(summarize(
+        wallet.id.clone(),
+        &me,
+        history.provider,
+        entries,
+        history.unreadable,
+    ))
+}
+
 #[tauri::command]
 pub fn get_progress(state: State<'_, AppState>) -> Result<ProgressView, String> {
     let d = state.progress.0.lock().map_err(|_| LOCK_ERR.to_owned())?;
@@ -344,7 +394,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            6,
+            7,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

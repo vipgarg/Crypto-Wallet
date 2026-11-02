@@ -9,6 +9,7 @@ const COMMANDS: &[&str] = &[
     "get_portfolio",
     "app_info",
     "get_progress",
+    "get_activity",
 ];
 
 fn main() {

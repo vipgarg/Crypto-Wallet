@@ -3,6 +3,7 @@
 use chain_btc::esplora::{self, AddressStats};
 use chain_btc::BtcAddress;
 use chain_eth::{rpc, EthAddress};
+use chain_tron::history::{self, Trc20Event};
 use chain_tron::{api, TronAddress};
 use std::collections::HashMap;
 use std::future::Future;
@@ -14,7 +15,7 @@ use serde::Serialize;
 use thiserror::Error;
 use wallet_types::Network;
 
-use crate::config::{NetworkConfig, ProviderConfig, ProviderKind};
+use crate::config::{NetworkConfig, ProviderConfig, ProviderKind, FEATURE_TRC20_HISTORY};
 use crate::cross_check::{cross_check, CrossChecked};
 use crate::http::{HttpClient, HttpError};
 
@@ -87,6 +88,27 @@ pub async fn trc20_balance<H: HttpClient>(
         .post_json(&url, &api::trc20_balance_of(token, holder))
         .await?;
     api::parse_trc20_balance(&resp).map_err(parse_err)
+}
+
+/// TRC-20 history of an address from a provider with the `trc20_history`
+/// feature. Returns the events and the number of unreadable entries.
+pub async fn trc20_history<H: HttpClient>(
+    http: &H,
+    p: &ProviderConfig,
+    addr: &TronAddress,
+) -> Result<(Vec<Trc20Event>, usize), FetchError> {
+    let url = format!("{}{}", p.base_url, history::trc20_history_path(addr));
+    let body = http.get_text(&url).await?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(parse_err)?;
+    history::parse_trc20_history(&json).map_err(parse_err)
+}
+
+/// History fetched from one provider (history isn't cross-checked yet).
+#[derive(Debug, Clone)]
+pub struct TronHistory {
+    pub provider: String,
+    pub events: Vec<Trc20Event>,
+    pub unreadable: usize,
 }
 
 /// The facts compared between providers for one Bitcoin address. Mempool
@@ -330,6 +352,33 @@ impl<'a, H: HttpClient> Sources<'a, H> {
         .await
     }
 
+    /// TRC-20 history from the first provider that offers it and answers.
+    /// Errors list every provider tried.
+    pub async fn tron_history(&self, addr: &TronAddress) -> Result<TronHistory, String> {
+        let mut errors = Vec::new();
+        for p in self
+            .config
+            .providers_for(Network::Tron)
+            .filter(|p| p.has_feature(FEATURE_TRC20_HISTORY))
+        {
+            self.pacer.wait(p).await;
+            match trc20_history(self.http, p, addr).await {
+                Ok((events, unreadable)) => {
+                    return Ok(TronHistory {
+                        provider: p.id.clone(),
+                        events,
+                        unreadable,
+                    })
+                }
+                Err(e) => errors.push(format!("{}: {e}", p.id)),
+            }
+        }
+        if errors.is_empty() {
+            errors.push("no configured provider offers TRON history".into());
+        }
+        Err(errors.join("; "))
+    }
+
     pub async fn btc_address(&self, addr: &BtcAddress) -> CrossChecked<ConfirmedBtcFacts> {
         self.btc_address_timed(addr).await.result
     }
@@ -489,6 +538,38 @@ mod tests {
         assert_eq!(r.value().map(|f| f.confirmed_sats), Some(5000));
         // Only individual addresses are requested, never an xpub.
         assert!(http.requested().iter().all(|u| !u.contains("pub")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tron_history_uses_the_provider_with_the_feature() {
+        let config = NetworkConfig::embedded().expect("config");
+        let addr: TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("addr");
+        let p = config
+            .providers_for(Network::Tron)
+            .find(|p| p.has_feature(FEATURE_TRC20_HISTORY))
+            .expect("history provider");
+        let body = serde_json::json!({"success": true, "data": [{
+            "transaction_id": "cd".repeat(32),
+            "token_info": {"symbol": "USDT", "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "decimals": 6},
+            "block_timestamp": 1u64, "from": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            "to": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "type": "Transfer", "value": "5"
+        }]});
+        let mut http = MockHttp::default();
+        http.on_get(
+            &format!("{}{}", p.base_url, history::trc20_history_path(&addr)),
+            &body.to_string(),
+        );
+        let s = Sources::new(&http, &config);
+        let h = s.tron_history(&addr).await.expect("history");
+        assert_eq!(h.provider, p.id);
+        assert_eq!(h.events.len(), 1);
+        // Only the provider that offers the feature is asked.
+        assert_eq!(http.requested().len(), 1);
+
+        let empty = MockHttp::default();
+        let s2 = Sources::new(&empty, &config);
+        let err = s2.tron_history(&addr).await.expect_err("unreachable");
+        assert!(err.contains(&p.id));
     }
 
     #[tokio::test(start_paused = true)]

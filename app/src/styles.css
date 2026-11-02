@@ -139,6 +139,18 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--bord
 details summary { cursor: pointer; color: var(--muted); }
 details .log { margin-top: 8px; }
 
+/* Activity */
+.toolbar { display: flex; gap: 8px; margin: 12px 0; }
+.toolbar select { font: inherit; padding: 6px 8px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+table.activity td { vertical-align: top; font-size: 13px; }
+.amount-small { font-weight: 600; font-variant-numeric: tabular-nums; }
+.addr { font-size: 12px; }
+.addr strong { color: var(--accent); }
+.flag { font-size: 12px; padding: 1px 0; }
+.flag-approval, .flag-look_alike, .flag-fake_token { color: var(--bad); font-weight: 600; }
+.flag-zero_value, .flag-dust, .flag-unknown_token { color: var(--warn); }
+tr.row-warn td { background: var(--bad-bg); }
+
 /* Tauri's isolation-pattern frame (ARCHITECTURE.md §9.1). It must stay in the
    page to filter IPC, but it has no visible content. */
 iframe#__tauri_isolation__ { display: none; }

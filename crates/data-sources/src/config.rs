@@ -41,6 +41,19 @@ pub struct ProviderConfig {
     pub kind: ProviderKind,
     pub base_url: String,
     pub operator: String,
+    /// Optional extra services this provider offers (see `KNOWN_FEATURES`).
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
+/// TronGrid's `/v1` TRC-20 transfer history (an indexer, not a plain node).
+pub const FEATURE_TRC20_HISTORY: &str = "trc20_history";
+const KNOWN_FEATURES: [(&str, ProviderKind); 1] = [(FEATURE_TRC20_HISTORY, ProviderKind::TronHttp)];
+
+impl ProviderConfig {
+    pub fn has_feature(&self, f: &str) -> bool {
+        self.features.iter().any(|x| x == f)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +139,14 @@ impl NetworkConfig {
             }
             if p.operator.trim().is_empty() {
                 return Err(err("operator must be named"));
+            }
+            for f in &p.features {
+                if !KNOWN_FEATURES
+                    .iter()
+                    .any(|(name, kind)| name == f && *kind == p.kind)
+                {
+                    return Err(err("unknown feature for this provider kind"));
+                }
             }
         }
         let mut hasher = Sha256::new();
@@ -214,6 +235,25 @@ mod tests {
         assert!(matches!(
             NetworkConfig::parse(&bad_chain),
             Err(ConfigError::ChainId)
+        ));
+    }
+
+    #[test]
+    fn features_are_validated() {
+        let c = NetworkConfig::embedded().expect("config");
+        assert!(c
+            .providers
+            .iter()
+            .any(|p| p.has_feature(FEATURE_TRC20_HISTORY)));
+        let bad = with_provider("[[providers]]\nid=\"a\"\nnetwork=\"bitcoin\"\nkind=\"esplora\"\nbase_url=\"https://x.example\"\noperator=\"A\"\nfeatures=[\"trc20_history\"]\n");
+        assert!(matches!(
+            NetworkConfig::parse(&bad),
+            Err(ConfigError::Provider(_, _))
+        ));
+        let unknown = with_provider("[[providers]]\nid=\"a\"\nnetwork=\"tron\"\nkind=\"tron_http\"\nbase_url=\"https://x.example\"\noperator=\"A\"\nfeatures=[\"sign_for_me\"]\n");
+        assert!(matches!(
+            NetworkConfig::parse(&unknown),
+            Err(ConfigError::Provider(_, _))
         ));
     }
 

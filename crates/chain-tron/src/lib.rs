@@ -229,6 +229,211 @@ pub mod api {
     }
 }
 
+/// TRC-20 transfer history from TronGrid's `/v1` indexer API. Everything in
+/// these responses is attacker-influenced (token names, symbols, amounts), so
+/// it is parsed strictly and treated as display data only.
+pub mod history {
+    use super::TronAddress;
+    use serde::Deserialize;
+    use serde_json::Value;
+    use thiserror::Error;
+
+    /// Most recent transfers fetched per request.
+    pub const LIMIT: u32 = 50;
+
+    pub fn trc20_history_path(addr: &TronAddress) -> String {
+        format!(
+            "/v1/accounts/{}/transactions/trc20?limit={LIMIT}&only_confirmed=true",
+            addr.to_base58()
+        )
+    }
+
+    #[derive(Debug, Error, PartialEq, Eq)]
+    pub enum HistoryError {
+        #[error("history response is malformed")]
+        Malformed,
+        #[error("history provider reported failure")]
+        NotSuccessful,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum EventKind {
+        Transfer,
+        Approval,
+        Other,
+    }
+
+    /// One TRC-20 event touching the watched address.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Trc20Event {
+        pub txid: String,
+        pub token: TronAddress,
+        /// Symbol as claimed by the token itself: untrusted, sanitised.
+        pub claimed_symbol: String,
+        pub claimed_decimals: u8,
+        pub timestamp_ms: u64,
+        pub from: TronAddress,
+        pub to: TronAddress,
+        pub kind: EventKind,
+        /// `None` if the value doesn't fit in 128 bits (only fake tokens do that).
+        pub value: Option<u128>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawToken {
+        address: String,
+        #[serde(default)]
+        symbol: Option<String>,
+        #[serde(default)]
+        decimals: Option<Value>,
+    }
+
+    #[derive(Deserialize)]
+    struct RawEvent {
+        transaction_id: String,
+        token_info: RawToken,
+        block_timestamp: u64,
+        from: String,
+        to: String,
+        #[serde(rename = "type")]
+        kind: String,
+        value: String,
+    }
+
+    /// Keep only printable ASCII and at most 16 characters: token symbols are
+    /// chosen by whoever deployed the token.
+    pub fn sanitize_symbol(s: &str) -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_graphic() || *c == ' ')
+            .take(16)
+            .collect()
+    }
+
+    fn parse_event(v: &Value) -> Option<Trc20Event> {
+        let raw: RawEvent = serde_json::from_value(v.clone()).ok()?;
+        let txid = raw.transaction_id.to_ascii_lowercase();
+        if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let decimals = match &raw.token_info.decimals {
+            Some(Value::Number(n)) => n.as_u64(),
+            Some(Value::String(s)) => s.parse::<u64>().ok(),
+            _ => Some(0),
+        }
+        .and_then(|d| u8::try_from(d).ok())
+        .filter(|d| *d <= 36)
+        .unwrap_or(0);
+        let value = if !raw.value.is_empty() && raw.value.bytes().all(|b| b.is_ascii_digit()) {
+            raw.value.parse::<u128>().ok()
+        } else {
+            return None;
+        };
+        Some(Trc20Event {
+            txid,
+            token: raw.token_info.address.parse().ok()?,
+            claimed_symbol: sanitize_symbol(raw.token_info.symbol.as_deref().unwrap_or("")),
+            claimed_decimals: decimals,
+            timestamp_ms: raw.block_timestamp,
+            from: raw.from.parse().ok()?,
+            to: raw.to.parse().ok()?,
+            kind: match raw.kind.as_str() {
+                "Transfer" => EventKind::Transfer,
+                "Approval" => EventKind::Approval,
+                _ => EventKind::Other,
+            },
+            value,
+        })
+    }
+
+    /// Returns the readable events and how many entries couldn't be read.
+    pub fn parse_trc20_history(body: &Value) -> Result<(Vec<Trc20Event>, usize), HistoryError> {
+        if body.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(HistoryError::NotSuccessful);
+        }
+        let data = body
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or(HistoryError::Malformed)?;
+        let mut events = Vec::with_capacity(data.len());
+        let mut unreadable = 0;
+        for v in data.iter().take(LIMIT as usize * 2) {
+            match parse_event(v) {
+                Some(e) => events.push(e),
+                None => unreadable += 1,
+            }
+        }
+        Ok((events, unreadable))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+
+        const USDT: &str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+        const ME: &str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+
+        fn ev(kind: &str, value: &str, symbol: &str) -> Value {
+            json!({
+                "transaction_id": "ab".repeat(32),
+                "token_info": {"symbol": symbol, "address": USDT, "decimals": 6, "name": "Tether USD"},
+                "block_timestamp": 1_700_000_000_000u64,
+                "from": ME,
+                "to": ME,
+                "type": kind,
+                "value": value,
+            })
+        }
+
+        #[test]
+        fn parses_and_sanitises() {
+            let body = json!({"success": true, "data": [
+                ev("Transfer", "1000000", "USDT"),
+                ev("Approval", "115792089237316195423570985008687907853269984665640564039457584007913129639935", "USDT"),
+                ev("Transfer", "5", "U\u{0007}SDT<script>alert(1)</script>"),
+            ], "meta": {}});
+            let (events, unreadable) = parse_trc20_history(&body).expect("parse");
+            assert_eq!(unreadable, 0);
+            assert_eq!(events[0].value, Some(1_000_000));
+            assert_eq!(events[0].kind, EventKind::Transfer);
+            assert_eq!(events[1].kind, EventKind::Approval);
+            assert_eq!(events[1].value, None, "max-uint approval doesn't fit u128");
+            assert!(events[2].claimed_symbol.len() <= 16);
+            assert!(!events[2].claimed_symbol.contains('\u{0007}'));
+        }
+
+        #[test]
+        fn skips_unreadable_entries_and_rejects_failure() {
+            let mut bad = ev("Transfer", "-1", "USDT");
+            let mut bad_tx = ev("Transfer", "1", "USDT");
+            bad_tx["transaction_id"] = json!("xyz");
+            let mut bad_addr = ev("Transfer", "1", "USDT");
+            bad_addr["from"] = json!("not-an-address");
+            bad["extra"] = json!(1);
+            let body = json!({"success": true, "data": [bad, bad_tx, bad_addr, ev("Transfer", "1", "USDT")]});
+            let (events, unreadable) = parse_trc20_history(&body).expect("parse");
+            assert_eq!((events.len(), unreadable), (1, 3));
+            assert_eq!(
+                parse_trc20_history(&json!({"success": false})),
+                Err(HistoryError::NotSuccessful)
+            );
+            assert_eq!(
+                parse_trc20_history(&json!({"success": true})),
+                Err(HistoryError::Malformed)
+            );
+        }
+
+        #[test]
+        fn path_is_confirmed_only_and_limited() {
+            let a: TronAddress = USDT.parse().expect("a");
+            assert_eq!(
+                trc20_history_path(&a),
+                format!("/v1/accounts/{USDT}/transactions/trc20?limit=50&only_confirmed=true")
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

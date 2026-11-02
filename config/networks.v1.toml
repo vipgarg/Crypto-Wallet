@@ -68,6 +68,9 @@ network = "tron"
 kind = "tron_http"
 base_url = "https://api.trongrid.io"
 operator = "TronGrid (TRON DAO)"
+# TronGrid also indexes TRC-20 transfer history (/v1 API). History comes from
+# this single source and is shown as such; balances are still cross-checked.
+features = ["trc20_history"]
 
 [[providers]]
 id = "publicnode-tron"

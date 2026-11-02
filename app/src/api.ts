@@ -95,6 +95,41 @@ export interface Progress {
   lines: ProgressLine[];
 }
 
+export type Direction = "in" | "out" | "self_transfer" | "not_involved";
+
+export type Flag =
+  | { kind: "zero_value" }
+  | { kind: "dust" }
+  | { kind: "look_alike"; similar_to: string; similar_to_label: string }
+  | { kind: "fake_token" }
+  | { kind: "unknown_token" }
+  | { kind: "approval" };
+
+export interface ActivityEntry {
+  txid: string;
+  time_ms: number;
+  direction: Direction;
+  is_approval: boolean;
+  token_label: string;
+  genuine_usdt: boolean;
+  amount: string | null;
+  counterparty: string;
+  flags: Flag[];
+  hidden: boolean;
+}
+
+export interface WalletActivity {
+  wallet_id: string;
+  address: string;
+  source: string;
+  entries: ActivityEntry[];
+  hidden_count: number;
+  approval_count: number;
+  lookalike_count: number;
+  unreadable: number;
+  notes: string[];
+}
+
 export const api = {
   listWallets: () => invoke<WalletView[]>("list_wallets"),
   addWallet: (input: NewWalletInput) => invoke<WalletView[]>("add_wallet", { input }),
@@ -102,6 +137,7 @@ export const api = {
   getPortfolio: () => invoke<Portfolio>("get_portfolio"),
   appInfo: () => invoke<AppInfo>("app_info"),
   getProgress: () => invoke<Progress>("get_progress"),
+  getActivity: (id: string) => invoke<WalletActivity>("get_activity", { id }),
 };
 
 export function errorText(e: unknown): string {

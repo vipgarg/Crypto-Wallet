@@ -1,6 +1,7 @@
 //! Watch-only wallet core: the wallet registry (public data only) and the
 //! cross-checked portfolio. There is no secret-handling code in this crate.
 
+pub mod activity;
 pub mod portfolio;
 pub mod registry;
 

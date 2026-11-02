@@ -53,6 +53,7 @@ pub fn run() {
             commands::get_portfolio,
             commands::app_info,
             commands::get_progress,
+            commands::get_activity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

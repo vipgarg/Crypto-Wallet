@@ -7,11 +7,14 @@ import {
   type BalanceStatus,
   type Portfolio,
   type Progress,
+  type ActivityEntry,
+  type Flag,
+  type WalletActivity,
   type Tier,
   type WalletView,
 } from "./api";
 
-type Page = "portfolio" | "wallets" | "about";
+type Page = "portfolio" | "activity" | "wallets" | "about";
 
 const STATUS_TEXT: Record<BalanceStatus, string> = {
   verified: "Verified (2+ sources agree)",
@@ -390,6 +393,184 @@ function AboutPage() {
   );
 }
 
+const DIRECTION_TEXT: Record<ActivityEntry["direction"], string> = {
+  in: "↓ Received",
+  out: "↑ Sent",
+  self_transfer: "↺ To itself",
+  not_involved: "· Not involved",
+};
+
+function flagText(f: Flag): string {
+  switch (f.kind) {
+    case "zero_value":
+      return "0-value transfer (poisoning trick)";
+    case "dust":
+      return "Dust (under 1 USDT)";
+    case "look_alike":
+      return `Looks like ${f.similar_to_label}: ${f.similar_to}`;
+    case "fake_token":
+      return "Fake token pretending to be USD";
+    case "unknown_token":
+      return "Not the official USDT contract";
+    case "approval":
+      return "Token approval: this address may spend your USDT";
+  }
+}
+
+/** Shows the first and last 6 characters in bold, which is what you compare. */
+function Addr({ a }: { a: string }) {
+  if (a.length <= 14) return <span className="mono">{a}</span>;
+  return (
+    <span className="mono addr">
+      <strong>{a.slice(0, 6)}</strong>
+      {a.slice(6, -6)}
+      <strong>{a.slice(-6)}</strong>
+    </span>
+  );
+}
+
+function EntryRow({ e }: { e: ActivityEntry }) {
+  const severe = e.flags.some((f) => f.kind === "approval" || f.kind === "look_alike");
+  return (
+    <tr className={severe ? "row-warn" : ""}>
+      <td>{new Date(e.time_ms).toLocaleString()}</td>
+      <td>{e.is_approval ? "⚠ Approval" : DIRECTION_TEXT[e.direction]}</td>
+      <td>
+        <div className="amount-small">{e.amount ?? "unlimited / unknown"}</div>
+        <div className="asset-label">{e.token_label}</div>
+      </td>
+      <td>
+        <Addr a={e.counterparty} />
+      </td>
+      <td>
+        {e.flags.map((f, i) => (
+          <div key={i} className={`flag flag-${f.kind}`}>
+            {flagText(f)}
+          </div>
+        ))}
+      </td>
+    </tr>
+  );
+}
+
+function EntryTable({ entries }: { entries: ActivityEntry[] }) {
+  return (
+    <table className="activity">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Type</th>
+          <th>Amount</th>
+          <th>Counterparty</th>
+          <th>Warnings</th>
+        </tr>
+      </thead>
+      <tbody>
+        {entries.map((e, i) => (
+          <EntryRow key={`${e.txid}-${i}`} e={e} />
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function ActivityPage() {
+  const [wallets, setWallets] = useState<WalletView[]>([]);
+  const [selected, setSelected] = useState("");
+  const [data, setData] = useState<WalletActivity | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    api.listWallets().then(
+      (ws) => {
+        const tron = ws.filter((w) => w.tron);
+        setWallets(tron);
+        if (tron.length > 0) setSelected(tron[0].id);
+      },
+      (e) => setError(errorText(e)),
+    );
+  }, []);
+
+  const load = async () => {
+    if (!selected) return;
+    setLoading(true);
+    setError(null);
+    setData(null);
+    try {
+      setData(await api.getActivity(selected));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const visible = data?.entries.filter((e) => !e.hidden) ?? [];
+  const hidden = data?.entries.filter((e) => e.hidden) ?? [];
+
+  return (
+    <section>
+      <h2>Activity</h2>
+      <p className="warning">
+        Never copy a recipient address from transaction history. Scammers send tiny or 0-value transfers from
+        addresses that look like ones you use. Always take addresses from your verified address book.
+      </p>
+      <p className="hint">Last 50 USDT (TRC-20) transfers per TRON wallet. Ethereum and Bitcoin history come next.</p>
+      {wallets.length === 0 && !error && <p>No wallet with a TRON address yet.</p>}
+      {wallets.length > 0 && (
+        <div className="toolbar">
+          <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+            {wallets.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.label} ({w.id})
+              </option>
+            ))}
+          </select>
+          <button onClick={() => void load()} disabled={loading || !selected}>
+            {loading ? "Loading…" : "Load activity"}
+          </button>
+        </div>
+      )}
+      {error && <p className="error">{error}</p>}
+      {data && (
+        <>
+          {data.approval_count > 0 && (
+            <p className="error">
+              ⚠ {data.approval_count} token approval(s) found: another address may be able to move this wallet's USDT.
+              If you didn't do this, follow the incident runbook (revoke from a clean device).
+            </p>
+          )}
+          {data.lookalike_count > 0 && (
+            <p className="warning">
+              {data.lookalike_count} transfer(s) involve an address that looks like one you use but is different. These
+              are typical of address poisoning.
+            </p>
+          )}
+          {data.notes.map((n, i) => (
+            <p key={i} className="hint">
+              {n}
+            </p>
+          ))}
+          <div className="card">
+            <h3>
+              Transfers <span className="muted">· {visible.length} shown</span>
+            </h3>
+            {visible.length === 0 ? <p className="muted">No regular USDT transfers in the latest entries.</p> : <EntryTable entries={visible} />}
+          </div>
+          {hidden.length > 0 && (
+            <details className="card">
+              <summary>Hidden: {hidden.length} suspicious, dust or unknown-token transfers</summary>
+              <p className="error">These are hidden on purpose. Do not copy any address from this list.</p>
+              <EntryTable entries={hidden} />
+            </details>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>("portfolio");
   const portfolio = usePortfolio();
@@ -400,7 +581,7 @@ export default function App() {
           Watch-Only Wallet <span className="tag">no keys on this computer</span>
         </div>
         <nav>
-          {(["portfolio", "wallets", "about"] as Page[]).map((p) => (
+          {(["portfolio", "activity", "wallets", "about"] as Page[]).map((p) => (
             <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
               {p[0].toUpperCase() + p.slice(1)}
             </button>
@@ -409,6 +590,7 @@ export default function App() {
       </header>
       <main>
         {page === "portfolio" && <PortfolioPage state={portfolio} />}
+        {page === "activity" && <ActivityPage />}
         {page === "wallets" && <WalletsPage onChanged={portfolio.markStale} />}
         {page === "about" && <AboutPage />}
       </main>
