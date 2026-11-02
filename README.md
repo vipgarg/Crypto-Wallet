@@ -3,6 +3,7 @@
 A personal self-custody wallet, built in phases. This repository currently contains:
 
 - **Design:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (full plan, rev 4.1) and [`docs/ARCHITECTURE-MOBILE.md`](docs/ARCHITECTURE-MOBILE.md) (budget variant: existing PC + offline OnePlus tablet signer).
+- **Guides:** [`docs/alerts-guide.md`](docs/alerts-guide.md) (free email alerts for your addresses, works with the PC off). Evidence for the exit gates: [`docs/release-gate.md`](docs/release-gate.md).
 - **Code:** the **watch-only PC app** (Phase 1). It shows balances for your wallets and **holds no seeds or private keys**. It can't sign or send anything.
 
 ## What the watch-only app does
