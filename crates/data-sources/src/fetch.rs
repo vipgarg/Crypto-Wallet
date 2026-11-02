@@ -242,9 +242,12 @@ impl<'a, H: HttpClient> Sources<'a, H> {
                 let mut rate_limited = 0u8;
                 let mut skipped = false;
                 let r = loop {
-                    self.pacer.wait(p).await;
-                    // Checked after waiting our turn, so requests queued behind
-                    // a failing one are not sent once the provider is skipped.
+                    // Checked before waiting (a skipped provider must not slow
+                    // the refresh down) and again after waiting our turn (so
+                    // queued requests aren't sent once it has been skipped).
+                    if !self.breaker.is_open(&p.id) {
+                        self.pacer.wait(p).await;
+                    }
                     if self.breaker.is_open(&p.id) {
                         skipped = true;
                         break Err(FetchError::Skipped(BREAKER_THRESHOLD));
@@ -567,7 +570,10 @@ mod tests {
             assert!(t.timings.iter().all(|x| !x.skipped));
         }
         let before = http.requested().len();
+        let started = tokio::time::Instant::now();
         let t = s.trx_timed(&addr).await;
+        // A skipped provider costs no waiting time.
+        assert!(started.elapsed() < Duration::from_millis(100));
         // The dead provider wasn't asked again...
         assert_eq!(http.requested().len(), before + 1);
         assert!(t
