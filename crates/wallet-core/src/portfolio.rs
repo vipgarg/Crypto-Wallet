@@ -150,7 +150,17 @@ fn timings_text(t: &[ProviderTiming]) -> String {
                 return format!("{} skipped (kept failing)", x.provider);
             }
             let secs = format!("{}.{} s", x.millis / 1000, (x.millis % 1000) / 100);
-            format!("{} {} {}", x.provider, secs, if x.ok { "✓" } else { "✗" })
+            let slowed = if x.rate_limited > 0 {
+                format!(" (rate-limited {}×, waited and retried)", x.rate_limited)
+            } else {
+                String::new()
+            };
+            format!(
+                "{} {} {}{slowed}",
+                x.provider,
+                secs,
+                if x.ok { "✓" } else { "✗" }
+            )
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -589,7 +599,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn all_verified() {
         let config = NetworkConfig::embedded().expect("config");
         let reg = registry();
@@ -614,7 +624,7 @@ mod tests {
             .all(|r| !r.contains("zpub") && !r.contains("xpub")));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn disagreement_hides_value_and_marks_total_incomplete() {
         let config = NetworkConfig::embedded().expect("config");
         let reg = registry();
@@ -644,7 +654,7 @@ mod tests {
         assert!(!p.warnings.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn outage_stops_btc_scan() {
         let config = NetworkConfig::embedded().expect("config");
         let reg = registry();
@@ -681,7 +691,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn progress_shows_each_check_and_slow_providers() {
         let config = NetworkConfig::embedded().expect("config");
         let reg = registry();

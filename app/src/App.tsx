@@ -65,11 +65,15 @@ function ProgressLog({ progress, live }: { progress: Progress; live: boolean }) 
   );
 }
 
-function PortfolioPage() {
+/** Portfolio state lives at the app level, so a refresh keeps running and its
+ * result is kept while you switch tabs. */
+function usePortfolio() {
   const [data, setData] = useState<Portfolio | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [stale, setStale] = useState(false);
+  const running = useRef(false);
 
   // While a refresh runs, ask Rust for the progress log twice a second.
   useEffect(() => {
@@ -92,21 +96,39 @@ function PortfolioPage() {
   }, [loading]);
 
   const refresh = useCallback(async () => {
+    // Guard: never start a second refresh from the UI (React's development
+    // mode runs effects twice, and buttons can be double-clicked).
+    if (running.current) return;
+    running.current = true;
     setLoading(true);
     setError(null);
+    setStale(false);
     try {
       setData(await api.getPortfolio());
     } catch (e) {
       setError(errorText(e));
     } finally {
+      running.current = false;
       setLoading(false);
       api.getProgress().then(setProgress, () => undefined);
     }
   }, []);
 
+  // One automatic refresh when the app opens.
+  const started = useRef(false);
   useEffect(() => {
+    if (started.current) return;
+    started.current = true;
     void refresh();
   }, [refresh]);
+
+  return { data, error, loading, progress, stale, refresh, markStale: () => setStale(true) };
+}
+
+type PortfolioState = ReturnType<typeof usePortfolio>;
+
+function PortfolioPage({ state }: { state: PortfolioState }) {
+  const { data, error, loading, progress, stale, refresh } = state;
 
   return (
     <section>
@@ -132,6 +154,9 @@ function PortfolioPage() {
         </div>
       )}
       {error && <p className="error">{error}</p>}
+      {stale && !loading && (
+        <p className="warning">The wallet list changed since the last refresh. Click Refresh to update.</p>
+      )}
       {data?.warnings.map((w, i) => (
         <p key={i} className="warning">
           {w}
@@ -184,7 +209,7 @@ const TIERS: { value: Tier; label: string }[] = [
   { value: "watch_only", label: "T-W Watch-only" },
 ];
 
-function WalletsPage() {
+function WalletsPage({ onChanged }: { onChanged: () => void }) {
   const [wallets, setWallets] = useState<WalletView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({ id: "", label: "", tier: "savings" as Tier, btc: "", eth: "", tron: "" });
@@ -213,6 +238,7 @@ function WalletsPage() {
           tron: orNull(form.tron),
         }),
       );
+      onChanged();
       setForm({ id: "", label: "", tier: "savings", btc: "", eth: "", tron: "" });
     } catch (err) {
       setError(errorText(err));
@@ -225,6 +251,7 @@ function WalletsPage() {
     if (!window.confirm(`Stop watching "${id}"? This only removes it from this app; funds are not affected.`)) return;
     try {
       setWallets(await api.removeWallet(id));
+      onChanged();
     } catch (err) {
       setError(errorText(err));
     }
@@ -365,6 +392,7 @@ function AboutPage() {
 
 export default function App() {
   const [page, setPage] = useState<Page>("portfolio");
+  const portfolio = usePortfolio();
   return (
     <div className="app">
       <header>
@@ -380,8 +408,8 @@ export default function App() {
         </nav>
       </header>
       <main>
-        {page === "portfolio" && <PortfolioPage />}
-        {page === "wallets" && <WalletsPage />}
+        {page === "portfolio" && <PortfolioPage state={portfolio} />}
+        {page === "wallets" && <WalletsPage onChanged={portfolio.markStale} />}
         {page === "about" && <AboutPage />}
       </main>
     </div>

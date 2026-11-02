@@ -7,14 +7,14 @@ use chain_tron::{api, TronAddress};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
 use serde::Serialize;
 use thiserror::Error;
 use wallet_types::Network;
 
-use crate::config::{NetworkConfig, ProviderConfig};
+use crate::config::{NetworkConfig, ProviderConfig, ProviderKind};
 use crate::cross_check::{cross_check, CrossChecked};
 use crate::http::{HttpClient, HttpError};
 
@@ -115,6 +115,8 @@ pub struct ProviderTiming {
     pub ok: bool,
     /// Not asked at all, because it kept failing during this refresh.
     pub skipped: bool,
+    /// How many times the provider said "too many requests" before answering.
+    pub rate_limited: u8,
 }
 
 /// A cross-checked answer plus per-provider timings (shown in the UI's
@@ -149,12 +151,67 @@ impl Breaker {
     }
 }
 
+/// Retries after HTTP 429 before giving up on that request.
+pub const MAX_RATE_LIMIT_RETRIES: u8 = 3;
+const DEFAULT_RATE_LIMIT_WAIT: Duration = Duration::from_secs(2);
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(20);
+const MAX_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Minimum gap between two requests to the same provider. Bitcoin scans send
+/// many requests to Esplora providers, so they get the larger gap.
+fn base_interval(kind: ProviderKind) -> Duration {
+    match kind {
+        ProviderKind::Esplora => Duration::from_millis(100),
+        ProviderKind::EthJsonRpc | ProviderKind::TronHttp => Duration::from_millis(50),
+    }
+}
+
+struct PaceState {
+    interval: Duration,
+    next: tokio::time::Instant,
+}
+
+/// Spaces out requests to each provider, and slows down for the rest of the
+/// refresh when a provider rate-limits us.
+#[derive(Default)]
+struct Pacer(Mutex<HashMap<String, PaceState>>);
+
+impl Pacer {
+    async fn wait(&self, p: &ProviderConfig) {
+        let now = tokio::time::Instant::now();
+        let at = match self.0.lock() {
+            Ok(mut m) => {
+                let s = m.entry(p.id.clone()).or_insert(PaceState {
+                    interval: base_interval(p.kind),
+                    next: now,
+                });
+                let at = s.next.max(now);
+                s.next = at + s.interval;
+                at
+            }
+            Err(_) => now,
+        };
+        tokio::time::sleep_until(at).await;
+    }
+
+    fn slow_down(&self, id: &str, wait: Duration) {
+        if let Ok(mut m) = self.0.lock() {
+            if let Some(s) = m.get_mut(id) {
+                s.interval = (s.interval * 2).min(MAX_INTERVAL);
+                let resume = tokio::time::Instant::now() + wait;
+                s.next = s.next.max(resume);
+            }
+        }
+    }
+}
+
 /// Cross-checked queries across every provider of the relevant network.
 /// Create one per refresh: the failure counters start empty each time.
 pub struct Sources<'a, H: HttpClient> {
     pub http: &'a H,
     pub config: &'a NetworkConfig,
     breaker: Breaker,
+    pacer: Pacer,
 }
 
 impl<'a, H: HttpClient> Sources<'a, H> {
@@ -163,45 +220,75 @@ impl<'a, H: HttpClient> Sources<'a, H> {
             http,
             config,
             breaker: Breaker::default(),
+            pacer: Pacer::default(),
         }
     }
 
     /// Ask every provider of `network` **at the same time** and cross-check
-    /// the answers. Providers that keep failing are skipped (and counted as
-    /// failed, so the result can't become "verified" without them).
+    /// the answers. Requests to one provider are spaced out (pacing); a
+    /// rate-limited request waits and is retried. Providers that keep failing
+    /// are skipped (and counted as failed, so the result can't become
+    /// "verified" without them).
     async fn ask_all<'s, T, F, Fut>(&'s self, network: Network, ask: F) -> Timed<T>
     where
         T: PartialEq + Clone,
         F: Fn(&'s ProviderConfig) -> Fut,
         Fut: Future<Output = Result<T, FetchError>>,
     {
+        let ask = &ask;
         let futures = self.config.providers_for(network).map(|p| {
-            let skipped = self.breaker.is_open(&p.id);
-            let fut = (!skipped).then(|| ask(p));
             async move {
                 let start = Instant::now();
-                let r = match fut {
-                    Some(f) => {
-                        let r = f.await;
-                        self.breaker.record(&p.id, r.is_ok());
-                        r
+                let mut rate_limited = 0u8;
+                let mut skipped = false;
+                let r = loop {
+                    self.pacer.wait(p).await;
+                    // Checked after waiting our turn, so requests queued behind
+                    // a failing one are not sent once the provider is skipped.
+                    if self.breaker.is_open(&p.id) {
+                        skipped = true;
+                        break Err(FetchError::Skipped(BREAKER_THRESHOLD));
                     }
-                    None => Err(FetchError::Skipped(BREAKER_THRESHOLD)),
+                    {
+                        let r = ask(p).await;
+                        match &r {
+                            Err(FetchError::Http(HttpError::RateLimited { retry_after_secs }))
+                                if rate_limited < MAX_RATE_LIMIT_RETRIES =>
+                            {
+                                rate_limited += 1;
+                                let wait = retry_after_secs
+                                    .map(Duration::from_secs)
+                                    .unwrap_or(DEFAULT_RATE_LIMIT_WAIT)
+                                    .min(MAX_RATE_LIMIT_WAIT);
+                                self.pacer.slow_down(&p.id, wait);
+                            }
+                            _ => break r,
+                        }
+                    }
                 };
-                (p.id.clone(), start.elapsed(), r, skipped)
+                if !skipped {
+                    self.breaker.record(&p.id, r.is_ok());
+                }
+                (p.id.clone(), start.elapsed(), r, skipped, rate_limited)
             }
         });
         let answers = join_all(futures).await;
         let timings = answers
             .iter()
-            .map(|(id, elapsed, r, skipped)| ProviderTiming {
+            .map(|(id, elapsed, r, skipped, rate_limited)| ProviderTiming {
                 provider: id.clone(),
                 millis: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
                 ok: r.is_ok(),
                 skipped: *skipped,
+                rate_limited: *rate_limited,
             })
             .collect();
-        let result = cross_check(answers.into_iter().map(|(id, _, r, _)| (id, r)).collect());
+        let result = cross_check(
+            answers
+                .into_iter()
+                .map(|(id, _, r, _, _)| (id, r))
+                .collect(),
+        );
         Timed { result, timings }
     }
 
@@ -265,7 +352,7 @@ impl<'a, H: HttpClient> Sources<'a, H> {
 /// Not compiled into release builds.
 #[cfg(any(test, feature = "mock"))]
 pub mod mock {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::Mutex;
 
     use serde_json::Value;
@@ -279,6 +366,8 @@ pub mod mock {
         pub get: HashMap<String, Result<String, HttpError>>,
         pub post: HashMap<(String, String), Result<Value, HttpError>>,
         pub log: Mutex<Vec<String>>,
+        /// Answers returned in order for a GET URL, before falling back to `get`.
+        pub get_seq: Mutex<HashMap<String, VecDeque<Result<String, HttpError>>>>,
     }
 
     impl MockHttp {
@@ -289,6 +378,11 @@ pub mod mock {
             self.post
                 .insert((url.to_owned(), req.to_string()), Ok(resp));
         }
+        pub fn on_get_seq(&mut self, url: &str, answers: Vec<Result<String, HttpError>>) {
+            if let Ok(mut m) = self.get_seq.lock() {
+                m.insert(url.to_owned(), answers.into());
+            }
+        }
         pub fn requested(&self) -> Vec<String> {
             self.log.lock().map(|l| l.clone()).unwrap_or_default()
         }
@@ -298,6 +392,11 @@ pub mod mock {
         async fn get_text(&self, url: &str) -> Result<String, HttpError> {
             if let Ok(mut l) = self.log.lock() {
                 l.push(format!("GET {url}"));
+            }
+            if let Ok(mut m) = self.get_seq.lock() {
+                if let Some(next) = m.get_mut(url).and_then(VecDeque::pop_front) {
+                    return next;
+                }
             }
             self.get
                 .get(url)
@@ -326,7 +425,7 @@ mod tests {
         format!("{:064x}", n)
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn usdt_trc20_two_providers_agree() {
         let config = NetworkConfig::embedded().expect("config");
         let holder: TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("addr");
@@ -344,7 +443,7 @@ mod tests {
         assert!(s.usdt_trc20(&holder).await.is_verified());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn usdt_erc20_providers_disagree() {
         let config = NetworkConfig::embedded().expect("config");
         let holder: EthAddress = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
@@ -366,7 +465,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn btc_ignores_mempool_differences_but_not_confirmed() {
         let config = NetworkConfig::embedded().expect("config");
         let addr: BtcAddress = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
@@ -389,7 +488,68 @@ mod tests {
         assert!(http.requested().iter().all(|u| !u.contains("pub")));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_is_waited_out_and_retried() {
+        let config = NetworkConfig::embedded().expect("config");
+        let addr: BtcAddress = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+            .parse()
+            .expect("addr");
+        let ok = r#"{"chain_stats":{"funded_txo_sum":7,"spent_txo_sum":0,"tx_count":1},"mempool_stats":{"funded_txo_sum":0,"spent_txo_sum":0,"tx_count":0}}"#;
+        let mut http = MockHttp::default();
+        let ps: Vec<_> = config.providers_for(Network::Bitcoin).collect();
+        let limited = || {
+            Err(HttpError::RateLimited {
+                retry_after_secs: Some(3),
+            })
+        };
+        http.on_get_seq(
+            &format!("{}/address/{}", ps[0].base_url, addr),
+            vec![limited(), limited()],
+        );
+        http.on_get(&format!("{}/address/{}", ps[0].base_url, addr), ok);
+        http.on_get(&format!("{}/address/{}", ps[1].base_url, addr), ok);
+        let s = Sources::new(&http, &config);
+        let started = tokio::time::Instant::now();
+        let t = s.btc_address_timed(&addr).await;
+        assert!(t.result.is_verified(), "{:?}", t.result);
+        let first = t
+            .timings
+            .iter()
+            .find(|x| x.provider == ps[0].id)
+            .expect("timing");
+        assert_eq!(first.rate_limited, 2);
+        // It honoured Retry-After (3 s, twice) instead of hammering the provider.
+        assert!(started.elapsed() >= Duration::from_secs(6));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_gives_up_after_max_retries() {
+        let config = NetworkConfig::embedded().expect("config");
+        let addr: BtcAddress = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+            .parse()
+            .expect("addr");
+        let mut http = MockHttp::default();
+        let ps: Vec<_> = config.providers_for(Network::Bitcoin).collect();
+        let limited: Vec<_> = (0..10)
+            .map(|_| {
+                Err(HttpError::RateLimited {
+                    retry_after_secs: None,
+                })
+            })
+            .collect();
+        http.on_get_seq(&format!("{}/address/{}", ps[0].base_url, addr), limited);
+        let s = Sources::new(&http, &config);
+        let t = s.btc_address_timed(&addr).await;
+        let first = t
+            .timings
+            .iter()
+            .find(|x| x.provider == ps[0].id)
+            .expect("timing");
+        assert_eq!(first.rate_limited, MAX_RATE_LIMIT_RETRIES);
+        assert!(!first.ok);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn failing_provider_is_skipped_but_never_counted_as_agreeing() {
         let config = NetworkConfig::embedded().expect("config");
         let addr: TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("addr");
@@ -426,7 +586,7 @@ mod tests {
             .all(|x| !x.skipped));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn one_provider_down_is_unverified() {
         let config = NetworkConfig::embedded().expect("config");
         let addr: TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("addr");

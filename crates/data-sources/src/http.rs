@@ -16,6 +16,8 @@ pub enum HttpError {
     Network(String),
     #[error("provider returned HTTP {0}")]
     Status(u16),
+    #[error("provider is rate-limiting us (HTTP 429)")]
+    RateLimited { retry_after_secs: Option<u64> },
     #[error("response too large")]
     TooLarge,
     #[error("response is not valid JSON/text")]
@@ -74,6 +76,15 @@ impl ReqwestClient {
 
     async fn read_body(resp: reqwest::Response) -> Result<Vec<u8>, HttpError> {
         let status = resp.status();
+        if status.as_u16() == 429 {
+            // Retry-After in seconds, if the provider sent it (capped later).
+            let retry_after_secs = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            return Err(HttpError::RateLimited { retry_after_secs });
+        }
         if !status.is_success() {
             return Err(HttpError::Status(status.as_u16()));
         }

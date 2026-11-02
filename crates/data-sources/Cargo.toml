@@ -18,6 +18,7 @@ serde_json = "1"
 sha2 = "0.10"
 hex = "0.4"
 thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["time"] }
 toml = "0.8"
 wallet-types = { path = "../wallet-types" }
 
@@ -26,7 +27,7 @@ wallet-types = { path = "../wallet-types" }
 mock = []
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "test-util"] }
 
 [lints]
 workspace = true

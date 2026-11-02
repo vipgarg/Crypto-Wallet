@@ -20,7 +20,7 @@ wallet-types = { path = "../wallet-types" }
 
 [dev-dependencies]
 data-sources = { path = "../data-sources", features = ["mock"] }
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "test-util"] }
 
 [lints]
 workspace = true
