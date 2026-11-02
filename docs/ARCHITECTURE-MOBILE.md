@@ -1,6 +1,6 @@
 # Budget Variant — Existing PC + Mobile Signer
 
-**Status:** Design, variant M1 (2026-11-02). Nothing is built yet. **Not ready for real funds** until the gates in §10 pass.
+**Status:** Design, variant M1, rev 2 (2026-11-02): **signer decided — dedicated offline OnePlus tablet, Android 15 (Option A)**. Nothing is built yet. **Not ready for real funds** until the gates in §10 pass.
 **Owner:** Vipul
 **Relation to the main plan:** [`ARCHITECTURE.md`](ARCHITECTURE.md) (rev 4.1) stays unchanged and remains the target design. This variant is a **lower-cost starting point**: it reuses your **existing PC** (online, watch-only) and a **mobile phone** (signing), with no second computer. Everything not restated here (chain validators §8, derivation paths §6.2, Intent model §7.3, operation list §8.0, incident lessons §14D) applies **as written in the main plan**. §11 below is the path back to the full design.
 **Scope for now:** 2–3 wallets, BTC + USDT (TRC-20) + USDT (ERC-20).
@@ -18,6 +18,8 @@ Your existing Windows PC runs the **watch-only app**: balances, history, receive
 | **A — Dedicated offline phone** (recommended) | A spare or cheap used Android phone, factory reset, **no SIM, never online**, used only for signing | **Cold.** Close to the main plan's offline laptop, and its security chip is actually better than an old laptop's | A spare phone you already own = free; a used Android with a security chip is usually far cheaper than a second PC | All wallets |
 | **B — Your daily phone** | The phone you use for WhatsApp, banking, browsing, with the signer app installed in a separate profile | **Hot.** The phone is online and runs many apps, so it is exposed to malware, scams and theft while unlocked | Free | **Spending wallet only, capped** |
 
+**Decided (D-M1): Option A, using your spare OnePlus tablet (Android 15, never rooted).** Option B is not used; it stays described below only as a fallback if the tablet is lost or broken.
+
 If you only have your daily phone this month, use **B for Spending only** and keep Savings/Vault **receive-only** (§3) until you have a dedicated phone. Receiving needs no signing, so receive-only wallets are fully safe to fund as long as their seeds were created offline (§5.1).
 
 ---
@@ -27,7 +29,7 @@ If you only have your daily phone this month, use **B for Spending only** and ke
 | Device | Role | Holds | Trusted for |
 |---|---|---|---|
 | **Existing Windows PC** (also used for business and development) | Watch-only app; builds unsigned tx; broadcasts | Public addresses / xpubs only | **Nothing security-critical.** Assumed compromisable |
-| **Signer phone** (Option A or B) | Signer app: vault, validation, display, signing | Encrypted seeds (stored wallets) | Its screen + your approval = authorization |
+| **Signer tablet** — OnePlus tablet, Android 15, dedicated and offline (Option A) | Signer app: vault, validation, display, signing | Encrypted seeds (stored wallets) | Its screen + your approval = authorization |
 | **Paper / steel** | Seed backups, passphrases, SeedQR card, paper address book | Seeds (physically) | Recovery |
 | **Block explorers' email alerts** | Free independent monitoring (replaces the main plan's monitor device for now) | Your public addresses | Detecting outgoing transactions when the PC is off |
 
@@ -78,9 +80,9 @@ If you only have your daily phone this month, use **B for Spending only** and ke
 
 | Wallet | Tier | Signer | Seed created on | Status this month | Cap |
 |---|---|---|---|---|---|
-| `spend-01` | Spending | Phone (Option A or B) | The signer phone | Active after testnet gates (§10) | **Option A: ≤ ₹50,000. Option B: ≤ ₹25,000** |
-| `savings-01` | Savings | **Option A phone only** | Option A phone (offline) | **Receive-only** until an Option A phone exists and §10 gates pass | Planned size (D2 in main plan) |
-| `vault-01` (optional) | Vault | Option A phone, **stateless** (SeedQR + passphrase, never stored) | Option A phone (offline) | **Receive-only** in this variant | — |
+| `spend-01` | Spending | OnePlus tablet | The tablet (offline) | Active after testnet gates (§10) | **≤ ₹50,000** |
+| `savings-01` | Savings | OnePlus tablet | The tablet (offline) | **Receive-only** until the §10 gates and independent review pass, then signable | Planned size (D2 in main plan) |
+| `vault-01` (optional) | Vault | OnePlus tablet, **stateless** (SeedQR + passphrase, never stored) | The tablet (offline) | **Receive-only** in this variant | — |
 
 - One seed per wallet; each seed derives BTC + ETH + TRON addresses (main plan §6.2).
 - **Savings and Vault use a BIP-39 passphrase**, stored separately from the seed.
@@ -140,6 +142,31 @@ Funds never depend on the phone. Restore each wallet from paper (+ passphrase) o
 | Storage | Powered off in a locked place when not in use. |
 | Start-up checks in the app | Refuses to run if: airplane mode is off, any network is connected, a SIM is present, USB debugging is on, an accessibility service is enabled, the bootloader is unlocked or verified boot isn't green (checked with on-device key attestation), or a screen recording/casting is active. |
 
+### 5.1a Setup steps for your OnePlus tablet (rev 2)
+
+GrapheneOS isn't available (it supports Pixel devices only), so the tablet keeps its stock OxygenOS. That's acceptable because it will never be online.
+
+**While it is still online (before any seed exists):**
+1. Note the exact model name (Settings → About tablet) in `docs/signer-setup.md`.
+2. Install **all pending system updates** (Settings → System → System updates). This is the last time it gets patches, so start from the newest.
+3. Check: Settings → About → "Bootloader"/"OEM unlocking" is **not** enabled, and you've never unlocked it.
+
+**Make it a dedicated offline device:**
+4. **Factory reset** (Settings → System → Reset options → Erase all data).
+5. In the setup wizard: **skip Wi-Fi**, **skip Google and OnePlus accounts**, decline cloud backup, location, diagnostics and personalised ads.
+6. Set a **strong alphanumeric password** (not a pattern or short PIN). Skip fingerprint/face unlock, or add them only as a convenience on top of the password.
+7. Turn on **Airplane mode** and keep it on; turn off Wi-Fi, Bluetooth, location (and NFC if present). If the tablet has a SIM slot, leave it empty.
+8. Disable every pre-installed app that can be disabled; don't open the browser, store or any other app.
+9. Label it "SIGNER — never connect to Wi-Fi", store it powered off in a locked place.
+
+**Installing the signer app (later, once the reviewed release exists):**
+10. Enable Developer options → USB debugging, connect to the PC's **wallet** account with a cable, run `adb install` with the reviewed APK after its hash matches the release record.
+11. On the tablet, the signer's first screen shows **its own signing-certificate fingerprint**; compare it with the reviewed release record on paper. A mismatch → uninstall, stop.
+12. **Revoke USB debugging authorizations**, turn USB debugging and Developer options **off**, unplug. The PC is untrusted, so the cable is connected only for these minutes, and before any seed is created on a fresh install.
+13. Updates repeat steps 10–12, rarely, only for reviewed releases.
+
+**What the signer app checks on this tablet at every start** (§5.1 list): airplane mode on, no connected network, no SIM, USB debugging off, no accessibility services or overlays, verified boot green via key attestation, no screen recording/casting. It also reports whether the vault key is held in **StrongBox** (dedicated security chip) or the **TEE** (the processor's secure area). Every Android 15 device has at least TEE-backed keys; StrongBox is better but not required for an offline signer. The result is recorded in `docs/signer-setup.md`.
+
 ### 5.2 Option B — daily phone (Spending only)
 
 | Control | Setting |
@@ -186,7 +213,7 @@ Severity = impact if it happens. Residual = what's left after the fixes.
 
 | # | Risk | Severity | Fixes | Residual |
 |---|---|---|---|---|
-| R1 | **Daily phone (Option B) is online and full of apps** — malware could read the decrypted seed while signing | Critical | Option B only for a capped Spending wallet; no `INTERNET` permission; StrongBox + per-signature authentication; separate profile; Savings/Vault never on Option B | Spending balance (≤ ₹25k) can be lost |
+| R1 | **Daily phone (Option B) is online and full of apps** — malware could read the decrypted seed while signing. *Not used: Option A chosen (rev 2); applies only if the tablet is unavailable* | Critical | Option B only for a capped Spending wallet; no `INTERNET` permission; StrongBox + per-signature authentication; separate profile; Savings/Vault never on Option B | Spending balance (≤ ₹25k) can be lost |
 | R2 | **Accessibility / overlay trojans** on Android tap "approve" or read the screen | Critical | Refuse to run with accessibility services or overlays active; touches blocked when obscured; typed recipient confirmation | Low on Option A; moderate on Option B |
 | R3 | **Fake or poisoned signer app** (malicious update, sideloaded fake, poisoned build from your dev account) | Critical | Reviewed release, two-build hash check, install only via cable after hash match; build account separate from dev account; never install signer updates from links or messages | Depends on the independent review (main plan §15) |
 | R4 | **PC compromised** (it's also your business/dev PC, so higher chance) — shows fake transaction or fake receive address | High | No keys on PC; phone decodes and displays; "verify on phone" for receive addresses; phone allowlist; compare with paper | Low, if you always check the phone screen |
@@ -195,7 +222,10 @@ Severity = impact if it happens. Residual = what's left after the fixes.
 | R7 | **Keyboard logging** of passwords/passphrases | High | In-app keyboard only for secrets | Low |
 | R8 | **Phone lost or stolen** | High | Strong lock, StrongBox-wrapped vault, separate vault password, passphrase for Savings; stateless Vault; restore from paper and move funds to new seeds within hours | Spending at risk if the thief also learns PIN + vault password |
 | R9 | **Phone stolen while unlocked** (snatch theft) | High | Per-signature authentication; vault password separate from phone PIN; signer locks immediately after each session; Android theft-protection lock on | Low |
-| R10 | **iPhone as daily phone** — can't run the signer | Medium | Use an Android device (Option A) | — |
+| R10 | **iPhone as daily phone** — can't run the signer | Medium | Resolved: the signer is an Android tablet (Option A) | — |
+| R24 | **(rev 2) Stock OxygenOS, no GrapheneOS; patches stop once offline** | Medium | Install all updates before going offline; factory reset; no accounts; airplane mode permanent; disable pre-installed apps; app checks verified boot via key attestation. Offline use removes most remote attack paths | Low, as long as it never goes online |
+| R25 | **(rev 2) USB cable to an untrusted PC when installing the signer** | High | Cable connected only for install/update; install only after the APK hash matches; compare the signing-certificate fingerprint on the tablet with paper; revoke debugging authorizations and turn USB debugging off afterwards | Low |
+| R26 | **(rev 2) Tablet may only have TEE, not StrongBox** | Medium | The app reports which; vault is also protected by Argon2id password and (Savings) passphrase; strong tablet password; stored locked away | Low for an offline device |
 | R11 | **Option A phone accidentally goes online** (airplane mode turned off, Wi-Fi joined) | High | App refuses to run unless airplane mode is on with no connections and no SIM; check on every start | If it happens, treat stored seeds as exposed and move funds to new seeds |
 | R12 | **Old phone without security updates** | Medium | Acceptable **only** for Option A (offline); never for Option B; prefer devices with StrongBox and verified boot | Low on Option A |
 | R13 | **Rooted / unlocked-bootloader phone** | High | On-device key attestation: refuse unless verified boot is green (or GrapheneOS's verified state); no rooting | Low |
@@ -227,10 +257,10 @@ Severity = impact if it happens. Residual = what's left after the fixes.
 
 | # | Decision | Recommendation | By |
 |---|---|---|---|
-| D-M1 | Signer phone | **Option A** (dedicated offline Android with StrongBox; GrapheneOS-capable Pixel is best). Option B only for capped Spending until then | Week 1 |
+| D-M1 | Signer device | **Decided (rev 2): Option A — dedicated offline OnePlus tablet, Android 15, stock OxygenOS** | Done |
 | D-M2 | Signer app UI technology | Kotlin + Jetpack Compose UI, Rust core via UniFFI; no WebView | Week 2 |
-| D-M3 | Spending cap | Option A ≤ ₹50k; Option B ≤ ₹25k | Week 1 |
-| D-M4 | Wallets this month | `spend-01`, `savings-01` (receive-only until Option A), optional `vault-01` (receive-only) | Week 1 |
+| D-M3 | Spending cap | **≤ ₹50k** (Option A) | Week 1 |
+| D-M4 | Wallets this month | `spend-01`, `savings-01` (receive-only until the §10 gates and review pass), optional `vault-01` (receive-only) | Week 1 |
 | D-M5 | Seed creation before the signer app is ready | Only on an offline Option A phone, with the signer's tested generator, or a well-known open-source BIP-39 wallet installed offline from a verified download; then restore-test in a second wallet | Week 1–2 |
 
 ---
@@ -239,9 +269,9 @@ Severity = impact if it happens. Residual = what's left after the fixes.
 
 | Week | Work | Gate before moving on |
 |---|---|---|
-| **1** | Decide D-M1…D-M5; prepare the PC's "wallet" account (§5.3); prepare the phone (§5.1 or §5.2); paper, passphrase, SeedQR materials; set up explorer email alerts | Phone passes its start-up checks (§5.1/§5.2) |
+| **1** | Decide D-M2…D-M5; prepare the PC's "wallet" account (§5.3); prepare the OnePlus tablet (§5.1a steps 1–9); paper, passphrase, SeedQR materials; set up explorer email alerts | Phone passes its start-up checks (§5.1/§5.2) |
 | **2** | Watch-only PC app (main plan Phase 1 scope, without the monitor device); import xpubs from the phone by QR | Balances match explorers; poisoning dust is hidden |
-| **2** | Create `savings-01` (and `vault-01`) seeds offline; restore test | Same addresses in an independent wallet on all 3 networks → **receive-only funding allowed** |
+| **2** | Create `spend-01`, `savings-01` (and `vault-01`) seeds offline on the tablet; restore test | Same addresses in an independent wallet on all 3 networks → **receive-only funding allowed** |
 | **3–4** | Signer app on **testnets** (BTC testnet4/signet, ETH Sepolia, TRON Nile): vaults, QR transport, validators, signer policy | All main-plan Phase 2 test suites that apply (malformed tx, manipulated RPC, recipient substitution, fee manipulation, QR channel) pass; leak scan clean; app refuses to run when its checks fail |
 | **After** | Independent review → canary (≤ ₹500) → Spending live → Savings live (Option A only) | Main plan §15 sequence, with G12 replaced by "signer phone passes §5.1/§5.2 checks" |
 
@@ -253,7 +283,7 @@ Severity = impact if it happens. Residual = what's left after the fixes.
 
 | When | Upgrade |
 |---|---|
-| A spare phone is available | Move to **Option A**; retire Option B; Savings becomes signable |
+| ~~A spare phone is available~~ | Done (rev 2): OnePlus tablet is the Option A signer |
 | Budget allows ~₹1–3k/month or a small device | Raspberry Pi monitor (main plan §10.0) replaces explorer-only alerts |
 | Budget allows a hardware wallet | Add it as a second signer; BTC Vault becomes 2-of-3 multisig (main plan §4.1, D1) |
 | Budget allows a dedicated laptop | Full main plan rev 4.1; the Option A phone stays as a second signer |
