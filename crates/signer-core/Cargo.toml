@@ -1,0 +1,27 @@
+[package]
+name = "signer-core"
+version = "0.1.0"
+description = "Offline signer core: seed creation, derivation, encrypted vault, watch-only export. No network code."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+auth = { path = "../auth" }
+bip39 = { version = "2", default-features = false, features = ["std"] }
+bitcoin = { version = "0.32", default-features = false, features = ["std", "serde"] }
+chain-btc = { path = "../chain-btc" }
+chain-eth = { path = "../chain-eth" }
+chain-tron = { path = "../chain-tron" }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+wallet-types = { path = "../wallet-types" }
+zeroize = "1"
+getrandom = "0.2"
+
+[lints]
+workspace = true

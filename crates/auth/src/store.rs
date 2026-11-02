@@ -58,16 +58,27 @@ pub struct KdfParams {
 
 impl KdfParams {
     pub fn new_random() -> Result<Self, StoreError> {
+        Self::new_random_with(DEFAULT_M_KIB, DEFAULT_T, DEFAULT_P)
+    }
+
+    /// Custom cost (the offline signer uses a higher memory cost).
+    pub fn new_random_with(m_kib: u32, t: u32, p: u32) -> Result<Self, StoreError> {
         let mut salt = [0u8; 16];
         crate::random_bytes(&mut salt).map_err(|_| StoreError::Random)?;
-        Ok(Self {
+        let params = Self {
             alg: "argon2id".into(),
-            m_kib: DEFAULT_M_KIB,
-            t: DEFAULT_T,
-            p: DEFAULT_P,
+            m_kib,
+            t,
+            p,
             salt: B64.encode(salt),
-        })
+        };
+        params.validate()?;
+        Ok(params)
     }
+
+    /// Lowest cost accepted when opening a file (used by fast tests).
+    pub const MIN_M_KIB: u32 = MIN_M_KIB;
+    pub const MIN_T: u32 = MIN_T;
 
     fn validate(&self) -> Result<Vec<u8>, StoreError> {
         let salt = B64.decode(&self.salt).map_err(|_| StoreError::Malformed)?;

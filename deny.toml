@@ -2,6 +2,11 @@
 
 [graph]
 all-features = false
+# Check the platforms we release for: the PC app (Windows) and the signer
+# (Android). CI builds on Linux too, but the Linux-only GTK/WebKit stack Tauri
+# uses there is not shipped (it pulls in the unmaintained proc-macro-error,
+# RUSTSEC-2024-0370, at build time only).
+targets = ["x86_64-pc-windows-msvc", "aarch64-linux-android"]
 
 [advisories]
 # Any RUSTSEC advisory against a dependency fails the check unless it is

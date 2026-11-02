@@ -1,0 +1,269 @@
+//! Kotlin bindings for the offline signer (UniFFI). Thin wrappers only: all
+//! logic and checks live in `signer-core`.
+//!
+//! Secrets stay inside Rust objects (`Seed`, `UnlockedWallet`) wherever
+//! possible. The one exception is `Seed::words()`, which must reach the
+//! screen once so the user can write the recovery phrase down.
+
+#![allow(clippy::unwrap_used)] // generated scaffolding
+
+use std::sync::Arc;
+
+use signer_core::{accounts, entropy, export, seed, vault};
+use wallet_types::{Tier, WalletId};
+use zeroize::Zeroizing;
+
+uniffi::setup_scaffolding!();
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum SignerError {
+    #[error("{msg}")]
+    Dice { msg: String },
+    #[error("{msg}")]
+    Seed { msg: String },
+    #[error("{msg}")]
+    Vault { msg: String },
+    #[error("{msg}")]
+    Export { msg: String },
+    #[error("{msg}")]
+    Input { msg: String },
+}
+
+fn seed_err(e: seed::SeedError) -> SignerError {
+    SignerError::Seed { msg: e.to_string() }
+}
+
+/// Public data of a wallet (shown and exported; never secret).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct WalletPublicRecord {
+    pub fingerprint: String,
+    pub btc_zpub: String,
+    pub eth: String,
+    pub tron: String,
+}
+
+impl From<accounts::WalletPublic> for WalletPublicRecord {
+    fn from(p: accounts::WalletPublic) -> Self {
+        Self {
+            fingerprint: p.fingerprint,
+            btc_zpub: p.btc_zpub,
+            eth: p.eth,
+            tron: p.tron,
+        }
+    }
+}
+
+impl From<WalletPublicRecord> for accounts::WalletPublic {
+    fn from(p: WalletPublicRecord) -> Self {
+        Self {
+            fingerprint: p.fingerprint,
+            btc_zpub: p.btc_zpub,
+            eth: p.eth,
+            tron: p.tron,
+        }
+    }
+}
+
+fn parse_tier(t: &str) -> Result<Tier, SignerError> {
+    Ok(match t {
+        "vault" => Tier::Vault,
+        "savings" => Tier::Savings,
+        "spending" => Tier::Spending,
+        _ => {
+            return Err(SignerError::Input {
+                msg: "unknown tier".into(),
+            })
+        }
+    })
+}
+
+fn parse_id(id: &str) -> Result<WalletId, SignerError> {
+    id.parse()
+        .map_err(|e: wallet_types::InvalidWalletId| SignerError::Input { msg: e.to_string() })
+}
+
+/// Number of valid dice rolls typed so far, or why they're not acceptable yet.
+#[uniffi::export]
+pub fn check_dice(rolls: String) -> Result<u32, SignerError> {
+    let rolls = Zeroizing::new(rolls);
+    let parsed =
+        entropy::parse_dice(&rolls).map_err(|e| SignerError::Dice { msg: e.to_string() })?;
+    Ok(u32::try_from(parsed.len()).unwrap_or(u32::MAX))
+}
+
+/// A seed held inside Rust. Dropping it wipes the entropy.
+#[derive(uniffi::Object)]
+pub struct Seed {
+    inner: seed::SeedMaterial,
+}
+
+/// Create a new 24-word seed: OS randomness mixed with the dice rolls.
+#[uniffi::export]
+pub fn new_seed(dice_rolls: String) -> Result<Arc<Seed>, SignerError> {
+    let rolls = Zeroizing::new(dice_rolls);
+    let dice = entropy::parse_dice(&rolls).map_err(|e| SignerError::Dice { msg: e.to_string() })?;
+    let ent = entropy::new_entropy(&dice).map_err(|_| SignerError::Seed {
+        msg: "random generator failed".into(),
+    })?;
+    Ok(Arc::new(Seed {
+        inner: seed::SeedMaterial::from_entropy(&ent),
+    }))
+}
+
+/// Restore a seed from its 12 or 24 words (checksum is checked).
+#[uniffi::export]
+pub fn restore_seed(words: String) -> Result<Arc<Seed>, SignerError> {
+    let words = Zeroizing::new(words);
+    Ok(Arc::new(Seed {
+        inner: seed::SeedMaterial::from_words(&words).map_err(seed_err)?,
+    }))
+}
+
+#[uniffi::export]
+impl Seed {
+    /// The recovery words, to be written on paper once. Don't keep them.
+    pub fn words(&self) -> Result<Vec<String>, SignerError> {
+        Ok(self.inner.words().map_err(seed_err)?.to_vec())
+    }
+
+    /// Random word positions (1-based) the user must type back.
+    pub fn word_check_positions(&self, count: u32) -> Result<Vec<u32>, SignerError> {
+        let total = self.inner.words().map_err(seed_err)?.len();
+        let pos =
+            seed::word_check_positions(total, count as usize).map_err(|_| SignerError::Seed {
+                msg: "random generator failed".into(),
+            })?;
+        Ok(pos
+            .into_iter()
+            .map(|p| u32::try_from(p).unwrap_or(0))
+            .collect())
+    }
+
+    pub fn check_words(
+        &self,
+        positions: Vec<u32>,
+        answers: Vec<String>,
+    ) -> Result<bool, SignerError> {
+        let pos: Vec<usize> = positions.into_iter().map(|p| p as usize).collect();
+        seed::check_words(&self.inner, &pos, &answers).map_err(seed_err)
+    }
+
+    /// Public data for this seed + passphrase ("" for none).
+    pub fn derive_public(&self, passphrase: String) -> Result<WalletPublicRecord, SignerError> {
+        let passphrase = Zeroizing::new(passphrase);
+        Ok(accounts::derive_public(&self.inner, &passphrase)
+            .map_err(seed_err)?
+            .into())
+    }
+
+    /// Encrypt this seed into a vault file (Spending/Savings only).
+    pub fn seal_vault(
+        &self,
+        id: String,
+        label: String,
+        tier: String,
+        public: WalletPublicRecord,
+        uses_passphrase: bool,
+        vault_password: String,
+    ) -> Result<Vec<u8>, SignerError> {
+        let vault_password = Zeroizing::new(vault_password);
+        let kdf = vault::signer_kdf().map_err(|e| SignerError::Vault { msg: e.to_string() })?;
+        let info = vault::WalletInfo {
+            id: parse_id(&id)?,
+            label,
+            tier: parse_tier(&tier)?,
+            public: public.into(),
+            uses_passphrase,
+        };
+        vault::create(&info, &self.inner, &vault_password, kdf)
+            .map_err(|e| SignerError::Vault { msg: e.to_string() })
+    }
+}
+
+/// An unlocked stored wallet (for one signing session; drop it afterwards).
+#[derive(uniffi::Object)]
+pub struct UnlockedWallet {
+    inner: vault::UnlockedWallet,
+}
+
+#[uniffi::export]
+pub fn unlock_vault(
+    bytes: Vec<u8>,
+    vault_password: String,
+    passphrase: String,
+) -> Result<Arc<UnlockedWallet>, SignerError> {
+    let vault_password = Zeroizing::new(vault_password);
+    let passphrase = Zeroizing::new(passphrase);
+    let inner = vault::unlock(&bytes, &vault_password, &passphrase)
+        .map_err(|e| SignerError::Vault { msg: e.to_string() })?;
+    Ok(Arc::new(UnlockedWallet { inner }))
+}
+
+#[uniffi::export]
+impl UnlockedWallet {
+    pub fn id(&self) -> String {
+        self.inner.id.to_string()
+    }
+    pub fn label(&self) -> String {
+        self.inner.label.clone()
+    }
+    pub fn public(&self) -> WalletPublicRecord {
+        self.inner.public.clone().into()
+    }
+}
+
+/// The watch-only export string shown as a QR code for the PC app.
+#[uniffi::export]
+pub fn export_string(
+    id: String,
+    label: String,
+    tier: String,
+    public: WalletPublicRecord,
+) -> Result<String, SignerError> {
+    let e = export::WatchOnlyExport {
+        id: parse_id(&id)?,
+        label,
+        tier: parse_tier(&tier)?,
+        public: public.into(),
+    };
+    export::encode(&e).map_err(|e| SignerError::Export { msg: e.to_string() })
+}
+
+/// Bitcoin receive address #index (for "verify on signer").
+#[uniffi::export]
+pub fn btc_receive_address(public: WalletPublicRecord, index: u32) -> Result<String, SignerError> {
+    accounts::btc_receive_address(&public.into(), index).map_err(seed_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn end_to_end_through_the_ffi_layer() {
+        let dice: String = (0..99)
+            .map(|i| char::from(b'1' + (i * 5 % 6) as u8))
+            .collect();
+        assert_eq!(check_dice(dice.clone()).ok(), Some(99));
+        assert!(check_dice("123".into()).is_err());
+        let s = new_seed(dice).expect("seed");
+        assert_eq!(s.words().expect("w").len(), 24);
+        let public = s.derive_public(String::new()).expect("pub");
+        let exp = export_string(
+            "spend-01".into(),
+            "Spending".into(),
+            "spending".into(),
+            public.clone(),
+        )
+        .expect("export");
+        assert!(exp.starts_with(export::PREFIX));
+        assert!(btc_receive_address(public, 0)
+            .expect("addr")
+            .starts_with("bc1q"));
+        let restored = restore_seed(s.words().expect("w").join(" ")).expect("restore");
+        assert_eq!(
+            restored.derive_public(String::new()).expect("p").eth,
+            s.derive_public(String::new()).expect("p").eth
+        );
+    }
+}
