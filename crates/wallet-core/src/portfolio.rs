@@ -3,8 +3,9 @@
 //! incomplete.
 
 use chain_btc::{Chain, GapScanner, GAP_LIMIT};
-use data_sources::fetch::Sources;
+use data_sources::fetch::{ConfirmedBtcFacts, ProviderTiming, Sources, Timed};
 use data_sources::{CrossChecked, HttpClient, NetworkConfig};
+use futures_util::future::{join, join3, join_all};
 use serde::Serialize;
 use wallet_types::{short_address, Amount, Asset, Tier, WalletId};
 
@@ -115,73 +116,198 @@ fn from_checked(asset: Asset, c: CrossChecked<u128>) -> AssetBalance {
     }
 }
 
+/// Severity of a progress line, so the UI can colour it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressLevel {
+    Info,
+    Ok,
+    Warn,
+    Error,
+}
+
+/// Receives a line for every step of a portfolio refresh, so the user can see
+/// exactly what is being checked and which provider is slow or failing.
+pub trait ProgressSink: Send + Sync {
+    fn step(&self, level: ProgressLevel, text: String);
+}
+
+/// Discards progress (tests, callers that don't show it).
+pub struct NoProgress;
+
+impl ProgressSink for NoProgress {
+    fn step(&self, _: ProgressLevel, _: String) {}
+}
+
+/// Bitcoin addresses checked at the same time during an account scan. Kept
+/// small so free providers don't rate-limit us.
+pub const BTC_BATCH: u32 = 5;
+
+fn timings_text(t: &[ProviderTiming]) -> String {
+    t.iter()
+        .map(|x| {
+            let secs = format!("{}.{} s", x.millis / 1000, (x.millis % 1000) / 100);
+            format!("{} {} {}", x.provider, secs, if x.ok { "✓" } else { "✗" })
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn level_of<T>(c: &CrossChecked<T>) -> ProgressLevel {
+    match c {
+        CrossChecked::Verified { .. } => ProgressLevel::Ok,
+        CrossChecked::Unverified { .. } => ProgressLevel::Warn,
+        _ => ProgressLevel::Error,
+    }
+}
+
+fn status_word<T>(c: &CrossChecked<T>) -> &'static str {
+    match c {
+        CrossChecked::Verified { .. } => "verified",
+        CrossChecked::Unverified { .. } => "unverified (1 source)",
+        CrossChecked::Disagreement { .. } => "SOURCES DISAGREE",
+        CrossChecked::Unavailable { .. } => "unavailable",
+    }
+}
+
+/// Report one cross-checked balance and convert it for the portfolio.
+fn report_balance(
+    progress: &dyn ProgressSink,
+    wallet: &WalletId,
+    asset: Asset,
+    what: &str,
+    timed: Timed<u128>,
+) -> AssetBalance {
+    let shown = timed
+        .result
+        .value()
+        .map(|v| {
+            format!(
+                " = {} {}",
+                Amount::new(asset, *v).to_decimal_string(),
+                asset.symbol()
+            )
+        })
+        .unwrap_or_default();
+    progress.step(
+        level_of(&timed.result),
+        format!(
+            "[{wallet}] {} {what}: {}{shown} · {}",
+            asset.label(),
+            status_word(&timed.result),
+            timings_text(&timed.timings)
+        ),
+    );
+    from_checked(asset, timed.result)
+}
+
 /// Scan a BIP-84 account (receive + change chains, gap limit 20), summing
-/// confirmed balances. Stops at the first disagreement or outage: a partial
-/// scan is never reported as a verified total.
+/// confirmed balances. Addresses are checked in small parallel batches. Stops
+/// at the first disagreement or outage: a partial scan is never reported as a
+/// verified total.
 async fn scan_btc_account<H: HttpClient>(
     src: &Sources<'_, H>,
+    progress: &dyn ProgressSink,
+    wallet: &WalletId,
     acct: &chain_btc::AccountXpub,
 ) -> AssetBalance {
     let mut total: u128 = 0;
     let mut status = BalanceStatus::Verified;
     let mut problems = Vec::new();
     let mut sources = Vec::new();
+    let mut checked = 0u32;
     for chain in [Chain::Receive, Chain::Change] {
+        let chain_name = match chain {
+            Chain::Receive => "receive",
+            Chain::Change => "change",
+        };
         let mut gap = GapScanner::new(GAP_LIMIT);
-        while let Some(index) = gap.next() {
-            let addr = match acct.derive_address(chain, index) {
-                Ok(a) => a,
-                Err(e) => {
-                    return failed(Asset::Btc, BalanceStatus::Unavailable, vec![e.to_string()])
-                }
-            };
-            let where_ = format!(
-                "{} ({:?} #{index})",
-                short_address(&addr.to_string()),
-                chain
-            );
-            match src.btc_address(&addr).await {
-                CrossChecked::Verified { value, sources: s } => {
-                    sources = s;
-                    total = total.saturating_add(u128::from(value.confirmed_sats));
-                    gap.record(value.tx_count > 0);
-                }
-                CrossChecked::Unverified {
-                    value,
-                    source,
-                    failed: f,
-                } => {
-                    status = BalanceStatus::Unverified;
-                    sources = vec![source];
-                    if problems.is_empty() {
-                        problems.extend(f.into_iter().map(|(id, e)| format!("{id}: {e}")));
+        while let Some(first) = gap.next() {
+            let mut batch = Vec::new();
+            for index in first..first.saturating_add(BTC_BATCH) {
+                match acct.derive_address(chain, index) {
+                    Ok(a) => batch.push((index, a)),
+                    Err(e) => {
+                        return failed(Asset::Btc, BalanceStatus::Unavailable, vec![e.to_string()])
                     }
-                    total = total.saturating_add(u128::from(value.confirmed_sats));
-                    gap.record(value.tx_count > 0);
                 }
-                CrossChecked::Disagreement { answers } => {
-                    let detail = answers
-                        .iter()
-                        .map(|(id, v)| {
-                            format!("{id} says {} sats / {} txs", v.confirmed_sats, v.tx_count)
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    return failed(
-                        Asset::Btc,
-                        BalanceStatus::Disagreement,
-                        vec![format!("{where_}: {detail}")],
-                    );
-                }
-                CrossChecked::Unavailable { failed: f } => {
-                    let mut p = vec![format!("scan stopped at {where_}")];
-                    p.extend(f.into_iter().map(|(id, e)| format!("{id}: {e}")));
-                    return failed(Asset::Btc, BalanceStatus::Unavailable, p);
+            }
+            progress.step(
+                ProgressLevel::Info,
+                format!(
+                    "[{wallet}] Bitcoin: checking {chain_name} addresses #{first}–#{} …",
+                    first + BTC_BATCH - 1
+                ),
+            );
+            let results = join_all(batch.iter().map(|(_, a)| src.btc_address_timed(a))).await;
+            for ((index, addr), timed) in batch.iter().zip(results) {
+                checked += 1;
+                let where_ = format!("{chain_name} #{index} {}", short_address(&addr.to_string()));
+                let detail = match &timed.result {
+                    CrossChecked::Verified { value, .. }
+                    | CrossChecked::Unverified { value, .. } => {
+                        format!(" ({} sats, {} txs)", value.confirmed_sats, value.tx_count)
+                    }
+                    _ => String::new(),
+                };
+                progress.step(
+                    level_of(&timed.result),
+                    format!(
+                        "[{wallet}] Bitcoin {where_}: {}{detail} · {}",
+                        status_word(&timed.result),
+                        timings_text(&timed.timings)
+                    ),
+                );
+                match timed.result {
+                    CrossChecked::Verified { value, sources: s } => {
+                        sources = s;
+                        total = total.saturating_add(u128::from(value.confirmed_sats));
+                        gap.record(value.tx_count > 0);
+                    }
+                    CrossChecked::Unverified {
+                        value,
+                        source,
+                        failed: f,
+                    } => {
+                        status = BalanceStatus::Unverified;
+                        sources = vec![source];
+                        if problems.is_empty() {
+                            problems.extend(f.into_iter().map(|(id, e)| format!("{id}: {e}")));
+                        }
+                        total = total.saturating_add(u128::from(value.confirmed_sats));
+                        gap.record(value.tx_count > 0);
+                    }
+                    CrossChecked::Disagreement { answers } => {
+                        let detail = answers
+                            .iter()
+                            .map(|(id, v)| {
+                                format!("{id} says {} sats / {} txs", v.confirmed_sats, v.tx_count)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        return failed(
+                            Asset::Btc,
+                            BalanceStatus::Disagreement,
+                            vec![format!("{where_}: {detail}")],
+                        );
+                    }
+                    CrossChecked::Unavailable { failed: f } => {
+                        let mut p = vec![format!("scan stopped at {where_}")];
+                        p.extend(f.into_iter().map(|(id, e)| format!("{id}: {e}")));
+                        return failed(Asset::Btc, BalanceStatus::Unavailable, p);
+                    }
                 }
             }
         }
     }
     let amount = Amount::new(Asset::Btc, total);
+    progress.step(
+        ProgressLevel::Ok,
+        format!(
+            "[{wallet}] Bitcoin scan finished: {checked} addresses, {} BTC confirmed",
+            amount.to_decimal_string()
+        ),
+    );
     AssetBalance {
         asset: Asset::Btc,
         label: Asset::Btc.label(),
@@ -205,52 +331,83 @@ fn failed(asset: Asset, status: BalanceStatus, problems: Vec<String>) -> AssetBa
     }
 }
 
-async fn wallet_portfolio<H: HttpClient>(src: &Sources<'_, H>, w: &WatchWallet) -> WalletPortfolio {
-    let mut balances = Vec::new();
-    match &w.btc {
-        Some(BtcWatch::AccountXpub(x)) => balances.push(scan_btc_account(src, &x.0).await),
-        Some(BtcWatch::Address(a)) => {
-            let c = src.btc_address(a).await;
-            let mapped = match c {
-                CrossChecked::Verified { value, sources } => CrossChecked::Verified {
-                    value: u128::from(value.confirmed_sats),
-                    sources,
-                },
-                CrossChecked::Unverified {
-                    value,
-                    source,
-                    failed,
-                } => CrossChecked::Unverified {
-                    value: u128::from(value.confirmed_sats),
-                    source,
-                    failed,
-                },
-                CrossChecked::Disagreement { answers } => CrossChecked::Disagreement {
-                    answers: answers
-                        .into_iter()
-                        .map(|(id, v)| (id, u128::from(v.confirmed_sats)))
-                        .collect(),
-                },
-                CrossChecked::Unavailable { failed } => CrossChecked::Unavailable { failed },
-            };
-            balances.push(from_checked(Asset::Btc, mapped));
+fn btc_facts_to_sats(t: Timed<ConfirmedBtcFacts>) -> Timed<u128> {
+    let result = match t.result {
+        CrossChecked::Verified { value, sources } => CrossChecked::Verified {
+            value: u128::from(value.confirmed_sats),
+            sources,
+        },
+        CrossChecked::Unverified {
+            value,
+            source,
+            failed,
+        } => CrossChecked::Unverified {
+            value: u128::from(value.confirmed_sats),
+            source,
+            failed,
+        },
+        CrossChecked::Disagreement { answers } => CrossChecked::Disagreement {
+            answers: answers
+                .into_iter()
+                .map(|(id, v)| (id, u128::from(v.confirmed_sats)))
+                .collect(),
+        },
+        CrossChecked::Unavailable { failed } => CrossChecked::Unavailable { failed },
+    };
+    Timed {
+        result,
+        timings: t.timings,
+    }
+}
+
+/// One wallet: Bitcoin, Ethereum and TRON are checked at the same time.
+async fn wallet_portfolio<H: HttpClient>(
+    src: &Sources<'_, H>,
+    progress: &dyn ProgressSink,
+    w: &WatchWallet,
+) -> WalletPortfolio {
+    let id = &w.id;
+    let btc = async {
+        match &w.btc {
+            Some(BtcWatch::AccountXpub(x)) => vec![scan_btc_account(src, progress, id, &x.0).await],
+            Some(BtcWatch::Address(a)) => {
+                let t = btc_facts_to_sats(src.btc_address_timed(a).await);
+                vec![report_balance(progress, id, Asset::Btc, "address", t)]
+            }
+            None => vec![],
         }
-        None => {}
-    }
-    if let Some(eth) = &w.eth {
-        balances.push(from_checked(Asset::UsdtErc20, src.usdt_erc20(eth).await));
-        balances.push(from_checked(Asset::Eth, src.eth(eth).await));
-    }
-    if let Some(tron) = &w.tron {
-        balances.push(from_checked(Asset::UsdtTrc20, src.usdt_trc20(tron).await));
-        balances.push(from_checked(Asset::Trx, src.trx(tron).await));
-    }
+    };
+    let eth = async {
+        match &w.eth {
+            Some(addr) => {
+                let (usdt, eth) = join(src.usdt_erc20_timed(addr), src.eth_timed(addr)).await;
+                vec![
+                    report_balance(progress, id, Asset::UsdtErc20, "balance", usdt),
+                    report_balance(progress, id, Asset::Eth, "balance", eth),
+                ]
+            }
+            None => vec![],
+        }
+    };
+    let tron = async {
+        match &w.tron {
+            Some(addr) => {
+                let (usdt, trx) = join(src.usdt_trc20_timed(addr), src.trx_timed(addr)).await;
+                vec![
+                    report_balance(progress, id, Asset::UsdtTrc20, "balance", usdt),
+                    report_balance(progress, id, Asset::Trx, "balance", trx),
+                ]
+            }
+            None => vec![],
+        }
+    };
+    let (b, e, t) = join3(btc, eth, tron).await;
     WalletPortfolio {
         id: w.id.clone(),
         label: w.label.clone(),
         tier: w.tier,
         tier_name: w.tier.display_name(),
-        balances,
+        balances: b.into_iter().chain(e).chain(t).collect(),
     }
 }
 
@@ -258,11 +415,21 @@ pub async fn build_portfolio<H: HttpClient>(
     http: &H,
     config: &NetworkConfig,
     registry: &Registry,
+    progress: &dyn ProgressSink,
 ) -> Portfolio {
     let src = Sources { http, config };
     let mut wallets = Vec::new();
     for w in &registry.wallets {
-        wallets.push(wallet_portfolio(&src, w).await);
+        progress.step(
+            ProgressLevel::Info,
+            format!(
+                "[{}] Checking wallet \"{}\" ({})",
+                w.id,
+                w.label,
+                w.tier.display_name()
+            ),
+        );
+        wallets.push(wallet_portfolio(&src, progress, w).await);
     }
 
     let mut totals = Vec::new();
@@ -351,7 +518,7 @@ mod tests {
         let acct: AccountXpub = ZPUB.parse().expect("zpub");
         for (pi, p) in config.providers_for(Network::Bitcoin).enumerate() {
             for chain in [Chain::Receive, Chain::Change] {
-                for i in 0..=GAP_LIMIT + 1 {
+                for i in 0..GAP_LIMIT + 2 * BTC_BATCH {
                     let a = acct.derive_address(chain, i).expect("derive");
                     let body = match (chain, i) {
                         (Chain::Receive, 0) if disagree_at_receive_0 && pi == 1 => esplora(1, 1),
@@ -426,7 +593,7 @@ mod tests {
         let mut http = MockHttp::default();
         mock_btc(&mut http, &config, false);
         mock_eth_tron(&mut http, &config, &reg, 30_000_000);
-        let p = build_portfolio(&http, &config, &reg).await;
+        let p = build_portfolio(&http, &config, &reg, &NoProgress).await;
         let b = &p.wallets[0].balances;
         let get = |a: Asset| b.iter().find(|x| x.asset == a).expect("asset");
         assert_eq!(get(Asset::Btc).status, BalanceStatus::Verified);
@@ -451,7 +618,7 @@ mod tests {
         let mut http = MockHttp::default();
         mock_btc(&mut http, &config, true);
         mock_eth_tron(&mut http, &config, &reg, 29_000_000);
-        let p = build_portfolio(&http, &config, &reg).await;
+        let p = build_portfolio(&http, &config, &reg, &NoProgress).await;
         let b = &p.wallets[0].balances;
         let btc = b.iter().find(|x| x.asset == Asset::Btc).expect("btc");
         assert_eq!(btc.status, BalanceStatus::Disagreement);
@@ -479,19 +646,58 @@ mod tests {
         let config = NetworkConfig::embedded().expect("config");
         let reg = registry();
         let http = MockHttp::default(); // nothing answers
-        let p = build_portfolio(&http, &config, &reg).await;
+        let p = build_portfolio(&http, &config, &reg, &NoProgress).await;
         let btc = p.wallets[0]
             .balances
             .iter()
             .find(|x| x.asset == Asset::Btc)
             .expect("btc");
         assert_eq!(btc.status, BalanceStatus::Unavailable);
-        // Stopped at the first address instead of hammering all 40.
+        // Stopped after the first batch instead of hammering all 40+.
         let btc_requests = http
             .requested()
             .iter()
             .filter(|r| r.contains("/address/"))
             .count();
-        assert_eq!(btc_requests, 2);
+        assert_eq!(btc_requests, (BTC_BATCH * 2) as usize);
+    }
+
+    #[derive(Default)]
+    struct Recorder(std::sync::Mutex<Vec<(ProgressLevel, String)>>);
+
+    impl ProgressSink for Recorder {
+        fn step(&self, level: ProgressLevel, text: String) {
+            if let Ok(mut v) = self.0.lock() {
+                v.push((level, text));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_shows_each_check_and_slow_providers() {
+        let config = NetworkConfig::embedded().expect("config");
+        let reg = registry();
+        let mut http = MockHttp::default();
+        mock_btc(&mut http, &config, false);
+        mock_eth_tron(&mut http, &config, &reg, 30_000_000);
+        let rec = Recorder::default();
+        build_portfolio(&http, &config, &reg, &rec).await;
+        let lines = rec.0.lock().map(|v| v.clone()).unwrap_or_default();
+        let text: Vec<&str> = lines.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(text.iter().any(|l| l.contains("Checking wallet")));
+        assert!(text
+            .iter()
+            .any(|l| l.contains("checking receive addresses #0–#4")));
+        assert!(text
+            .iter()
+            .any(|l| l.contains("receive #0") && l.contains("150000 sats")));
+        assert!(text
+            .iter()
+            .any(|l| l.contains("mempool-space") && l.contains("✓")));
+        assert!(text
+            .iter()
+            .any(|l| l.contains("USDT on TRON (TRC-20) balance: verified = 30 USDT")));
+        assert!(text.iter().any(|l| l.contains("Bitcoin scan finished")));
+        assert!(lines.iter().all(|(lvl, _)| *lvl != ProgressLevel::Error));
     }
 }

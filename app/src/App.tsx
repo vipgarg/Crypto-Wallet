@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   errorText,
@@ -6,6 +6,7 @@ import {
   type AssetBalance,
   type BalanceStatus,
   type Portfolio,
+  type Progress,
   type Tier,
   type WalletView,
 } from "./api";
@@ -42,10 +43,53 @@ function BalanceCell({ b }: { b: AssetBalance }) {
   );
 }
 
+function seconds(ms: number): string {
+  return `${Math.floor(ms / 1000)}.${Math.floor((ms % 1000) / 100)} s`;
+}
+
+function ProgressLog({ progress, live }: { progress: Progress; live: boolean }) {
+  const end = useRef<HTMLDivElement>(null);
+  const lines = live ? progress.lines.slice(-14) : progress.lines;
+  useEffect(() => {
+    if (live) end.current?.scrollIntoView({ block: "nearest" });
+  }, [live, progress.lines.length]);
+  return (
+    <div className="log">
+      {lines.map((l, i) => (
+        <div key={i} className={`log-line log-${l.level}`}>
+          <span className="log-time">{seconds(l.at_ms)}</span> {l.text}
+        </div>
+      ))}
+      <div ref={end} />
+    </div>
+  );
+}
+
 function PortfolioPage() {
   const [data, setData] = useState<Portfolio | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
+
+  // While a refresh runs, ask Rust for the progress log twice a second.
+  useEffect(() => {
+    if (!loading) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const p = await api.getProgress();
+        if (!stopped) setProgress(p);
+      } catch {
+        /* progress is best-effort */
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 500);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [loading]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -56,6 +100,7 @@ function PortfolioPage() {
       setError(errorText(e));
     } finally {
       setLoading(false);
+      api.getProgress().then(setProgress, () => undefined);
     }
   }, []);
 
@@ -75,6 +120,17 @@ function PortfolioPage() {
         Every balance is asked of at least two independent providers. Only identical answers count as
         verified; nothing is decided by majority.
       </p>
+      {loading && (
+        <div className="card progress">
+          <div className="progress-head">
+            <strong>Checking providers…</strong>
+            <span className="muted">
+              {progress ? `${seconds(progress.elapsed_ms)} · ${progress.checks} checks done` : "starting"}
+            </span>
+          </div>
+          {progress && <ProgressLog progress={progress} live />}
+        </div>
+      )}
       {error && <p className="error">{error}</p>}
       {data?.warnings.map((w, i) => (
         <p key={i} className="warning">
@@ -96,6 +152,14 @@ function PortfolioPage() {
             </div>
           ))}
         </div>
+      )}
+      {!loading && progress && progress.lines.length > 0 && (
+        <details className="card">
+          <summary>
+            Last refresh log: {seconds(progress.elapsed_ms)}, {progress.checks} checks
+          </summary>
+          <ProgressLog progress={progress} live={false} />
+        </details>
       )}
       {data?.wallets.map((w) => (
         <div key={w.id} className="card">

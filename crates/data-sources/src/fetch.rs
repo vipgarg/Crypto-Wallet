@@ -4,6 +4,11 @@ use chain_btc::esplora::{self, AddressStats};
 use chain_btc::BtcAddress;
 use chain_eth::{rpc, EthAddress};
 use chain_tron::{api, TronAddress};
+use std::future::Future;
+use std::time::Instant;
+
+use futures_util::future::join_all;
+use serde::Serialize;
 use thiserror::Error;
 use wallet_types::Network;
 
@@ -98,6 +103,50 @@ impl From<AddressStats> for ConfirmedBtcFacts {
     }
 }
 
+/// How long one provider took for one question, and whether it answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProviderTiming {
+    pub provider: String,
+    pub millis: u64,
+    pub ok: bool,
+}
+
+/// A cross-checked answer plus per-provider timings (shown in the UI's
+/// progress log so a slow or failing provider is visible).
+#[derive(Debug, Clone)]
+pub struct Timed<T> {
+    pub result: CrossChecked<T>,
+    pub timings: Vec<ProviderTiming>,
+}
+
+/// Ask every provider **at the same time** and cross-check the answers.
+async fn ask_all<'p, T, F, Fut>(providers: Vec<&'p ProviderConfig>, ask: F) -> Timed<T>
+where
+    T: PartialEq + Clone,
+    F: Fn(&'p ProviderConfig) -> Fut,
+    Fut: Future<Output = Result<T, FetchError>>,
+{
+    let futures = providers.into_iter().map(|p| {
+        let fut = ask(p);
+        async move {
+            let start = Instant::now();
+            let r = fut.await;
+            (p.id.clone(), start.elapsed(), r)
+        }
+    });
+    let answers = join_all(futures).await;
+    let timings = answers
+        .iter()
+        .map(|(id, elapsed, r)| ProviderTiming {
+            provider: id.clone(),
+            millis: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+            ok: r.is_ok(),
+        })
+        .collect();
+    let result = cross_check(answers.into_iter().map(|(id, _, r)| (id, r)).collect());
+    Timed { result, timings }
+}
+
 /// Cross-checked queries across every provider of the relevant network.
 pub struct Sources<'a, H: HttpClient> {
     pub http: &'a H,
@@ -105,53 +154,67 @@ pub struct Sources<'a, H: HttpClient> {
 }
 
 impl<H: HttpClient> Sources<'_, H> {
-    pub async fn btc_address(&self, addr: &BtcAddress) -> CrossChecked<ConfirmedBtcFacts> {
-        let mut results = Vec::new();
-        for p in self.config.providers_for(Network::Bitcoin) {
-            let r = btc_address_stats(self.http, p, addr)
+    fn providers(&self, n: Network) -> Vec<&ProviderConfig> {
+        self.config.providers_for(n).collect()
+    }
+
+    pub async fn btc_address_timed(&self, addr: &BtcAddress) -> Timed<ConfirmedBtcFacts> {
+        ask_all(self.providers(Network::Bitcoin), |p| async move {
+            btc_address_stats(self.http, p, addr)
                 .await
-                .map(ConfirmedBtcFacts::from);
-            results.push((p.id.clone(), r));
-        }
-        cross_check(results)
+                .map(ConfirmedBtcFacts::from)
+        })
+        .await
+    }
+
+    pub async fn eth_timed(&self, addr: &EthAddress) -> Timed<u128> {
+        ask_all(self.providers(Network::Ethereum), |p| {
+            eth_balance(self.http, p, addr)
+        })
+        .await
+    }
+
+    pub async fn usdt_erc20_timed(&self, holder: &EthAddress) -> Timed<u128> {
+        let token = &self.config.usdt_erc20;
+        ask_all(self.providers(Network::Ethereum), |p| {
+            erc20_balance(self.http, p, token, holder)
+        })
+        .await
+    }
+
+    pub async fn trx_timed(&self, addr: &TronAddress) -> Timed<u128> {
+        ask_all(self.providers(Network::Tron), |p| {
+            trx_balance(self.http, p, addr)
+        })
+        .await
+    }
+
+    pub async fn usdt_trc20_timed(&self, holder: &TronAddress) -> Timed<u128> {
+        let token = &self.config.usdt_trc20;
+        ask_all(self.providers(Network::Tron), |p| {
+            trc20_balance(self.http, p, token, holder)
+        })
+        .await
+    }
+
+    pub async fn btc_address(&self, addr: &BtcAddress) -> CrossChecked<ConfirmedBtcFacts> {
+        self.btc_address_timed(addr).await.result
     }
 
     pub async fn eth(&self, addr: &EthAddress) -> CrossChecked<u128> {
-        let mut results = Vec::new();
-        for p in self.config.providers_for(Network::Ethereum) {
-            results.push((p.id.clone(), eth_balance(self.http, p, addr).await));
-        }
-        cross_check(results)
+        self.eth_timed(addr).await.result
     }
 
     pub async fn usdt_erc20(&self, holder: &EthAddress) -> CrossChecked<u128> {
-        let mut results = Vec::new();
-        for p in self.config.providers_for(Network::Ethereum) {
-            results.push((
-                p.id.clone(),
-                erc20_balance(self.http, p, &self.config.usdt_erc20, holder).await,
-            ));
-        }
-        cross_check(results)
+        self.usdt_erc20_timed(holder).await.result
     }
 
     pub async fn trx(&self, addr: &TronAddress) -> CrossChecked<u128> {
-        let mut results = Vec::new();
-        for p in self.config.providers_for(Network::Tron) {
-            results.push((p.id.clone(), trx_balance(self.http, p, addr).await));
-        }
-        cross_check(results)
+        self.trx_timed(addr).await.result
     }
 
     pub async fn usdt_trc20(&self, holder: &TronAddress) -> CrossChecked<u128> {
-        let mut results = Vec::new();
-        for p in self.config.providers_for(Network::Tron) {
-            results.push((
-                p.id.clone(),
-                trc20_balance(self.http, p, &self.config.usdt_trc20, holder).await,
-            ));
-        }
-        cross_check(results)
+        self.usdt_trc20_timed(holder).await.result
     }
 }
 

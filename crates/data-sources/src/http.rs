@@ -42,8 +42,8 @@ impl ReqwestClient {
         let inner = reqwest::Client::builder()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_secs(6))
+            .timeout(Duration::from_secs(12))
             .user_agent("watch-only-wallet/0.1")
             .build()
             .map_err(|e| HttpError::Network(e.to_string()))?;

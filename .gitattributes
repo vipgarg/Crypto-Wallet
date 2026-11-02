@@ -1,0 +1,6 @@
+# Keep LF line endings everywhere, including Windows checkouts, so hashes of
+# config files and builds are the same on every machine (ARCHITECTURE.md §9.3).
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary

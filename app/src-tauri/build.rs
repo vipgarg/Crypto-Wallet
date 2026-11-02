@@ -8,6 +8,7 @@ const COMMANDS: &[&str] = &[
     "remove_wallet",
     "get_portfolio",
     "app_info",
+    "get_progress",
 ];
 
 fn main() {

@@ -30,7 +30,13 @@ pub fn run() {
             let registry = Registry::load(&registry_path).map_err(|e| {
                 format!("The wallet list file can't be read ({e}). It has not been changed. See docs/incident-runbook.md.")
             });
-            app.manage(AppState { registry: Mutex::new(registry), registry_path, config, http });
+            app.manage(AppState {
+                registry: Mutex::new(registry),
+                registry_path,
+                config,
+                http,
+                progress: commands::ProgressState::default(),
+            });
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Watch-Only Wallet")
@@ -46,6 +52,7 @@ pub fn run() {
             commands::remove_wallet,
             commands::get_portfolio,
             commands::app_info,
+            commands::get_progress,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

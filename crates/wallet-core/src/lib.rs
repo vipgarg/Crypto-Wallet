@@ -5,6 +5,7 @@ pub mod portfolio;
 pub mod registry;
 
 pub use portfolio::{
-    build_portfolio, AssetBalance, AssetTotal, BalanceStatus, Portfolio, WalletPortfolio,
+    build_portfolio, AssetBalance, AssetTotal, BalanceStatus, NoProgress, Portfolio, ProgressLevel,
+    ProgressSink, WalletPortfolio,
 };
 pub use registry::{BtcWatch, NewWalletInput, Registry, RegistryError, WatchWallet};

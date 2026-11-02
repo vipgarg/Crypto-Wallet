@@ -80,12 +80,28 @@ export interface AppInfo {
   independence_warnings: string[];
 }
 
+export type ProgressLevel = "info" | "ok" | "warn" | "error";
+
+export interface ProgressLine {
+  at_ms: number;
+  level: ProgressLevel;
+  text: string;
+}
+
+export interface Progress {
+  running: boolean;
+  elapsed_ms: number;
+  checks: number;
+  lines: ProgressLine[];
+}
+
 export const api = {
   listWallets: () => invoke<WalletView[]>("list_wallets"),
   addWallet: (input: NewWalletInput) => invoke<WalletView[]>("add_wallet", { input }),
   removeWallet: (id: string) => invoke<WalletView[]>("remove_wallet", { id }),
   getPortfolio: () => invoke<Portfolio>("get_portfolio"),
   appInfo: () => invoke<AppInfo>("app_info"),
+  getProgress: () => invoke<Progress>("get_progress"),
 };
 
 export function errorText(e: unknown): string {

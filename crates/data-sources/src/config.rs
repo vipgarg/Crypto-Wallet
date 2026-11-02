@@ -129,7 +129,9 @@ impl NetworkConfig {
             }
         }
         let mut hasher = Sha256::new();
-        hasher.update(text.as_bytes());
+        // Hash with LF line endings so the value is identical on Windows
+        // (where Git may check the file out with CRLF) and everywhere else.
+        hasher.update(text.replace("\r\n", "\n").as_bytes());
         Ok(Self {
             version: raw.version,
             usdt_erc20,
@@ -213,6 +215,14 @@ mod tests {
             NetworkConfig::parse(&bad_chain),
             Err(ConfigError::ChainId)
         ));
+    }
+
+    #[test]
+    fn hash_ignores_windows_line_endings() {
+        let lf = NetworkConfig::parse(EMBEDDED_CONFIG).expect("lf");
+        let crlf_text = EMBEDDED_CONFIG.replace("\r\n", "\n").replace('\n', "\r\n");
+        let crlf = NetworkConfig::parse(&crlf_text).expect("crlf");
+        assert_eq!(lf.sha256, crlf.sha256);
     }
 
     #[test]

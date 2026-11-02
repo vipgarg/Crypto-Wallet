@@ -8,6 +8,7 @@ const ALLOWED = new Set([
   "remove_wallet",
   "get_portfolio",
   "app_info",
+  "get_progress",
 ]);
 
 window.__TAURI_ISOLATION_HOOK__ = (payload) => {

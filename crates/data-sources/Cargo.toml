@@ -8,6 +8,7 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 chain-btc = { path = "../chain-btc" }
 chain-eth = { path = "../chain-eth" }
 chain-tron = { path = "../chain-tron" }

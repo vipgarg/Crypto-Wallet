@@ -8,14 +8,19 @@
 //!   adding it to `build.rs`, `capabilities/main.json` and the isolation
 //!   script, and the test at the bottom of this file enforces the first.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use chain_btc::BtcAddress;
 use data_sources::{NetworkConfig, ReqwestClient};
 use serde::Serialize;
 use tauri::State;
-use wallet_core::{build_portfolio, BtcWatch, NewWalletInput, Portfolio, Registry, WatchWallet};
+use wallet_core::{
+    build_portfolio, BtcWatch, NewWalletInput, Portfolio, ProgressLevel, ProgressSink, Registry,
+    WatchWallet,
+};
 use wallet_types::Tier;
 
 pub struct AppState {
@@ -25,6 +30,85 @@ pub struct AppState {
     pub registry_path: PathBuf,
     pub config: NetworkConfig,
     pub http: ReqwestClient,
+    pub progress: ProgressState,
+}
+
+/// A whole refresh is stopped after this long; whatever hasn't answered by
+/// then is reported as a timeout instead of the app waiting forever.
+pub const REFRESH_TIME_LIMIT: Duration = Duration::from_secs(120);
+/// Progress lines kept for the UI (oldest dropped first).
+const MAX_PROGRESS_LINES: usize = 400;
+
+#[derive(Clone, Serialize)]
+pub struct ProgressLine {
+    at_ms: u64,
+    level: ProgressLevel,
+    text: String,
+}
+
+#[derive(Default)]
+struct ProgressData {
+    running: bool,
+    started: Option<Instant>,
+    finished_ms: Option<u64>,
+    checks: u32,
+    lines: VecDeque<ProgressLine>,
+}
+
+/// Live log of the current (or last) portfolio refresh.
+#[derive(Default)]
+pub struct ProgressState(Mutex<ProgressData>);
+
+fn elapsed_ms(started: Option<Instant>) -> u64 {
+    started
+        .map(|s| u64::try_from(s.elapsed().as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+impl ProgressSink for ProgressState {
+    fn step(&self, level: ProgressLevel, text: String) {
+        if let Ok(mut d) = self.0.lock() {
+            if level != ProgressLevel::Info {
+                d.checks += 1;
+            }
+            let at_ms = elapsed_ms(d.started);
+            d.lines.push_back(ProgressLine { at_ms, level, text });
+            while d.lines.len() > MAX_PROGRESS_LINES {
+                d.lines.pop_front();
+            }
+        }
+    }
+}
+
+impl ProgressState {
+    /// Start a new refresh; fails if one is already running.
+    fn begin(&self) -> Result<(), String> {
+        let mut d = self.0.lock().map_err(|_| LOCK_ERR.to_owned())?;
+        if d.running {
+            return Err("A refresh is already running. Wait for it to finish.".into());
+        }
+        *d = ProgressData {
+            running: true,
+            started: Some(Instant::now()),
+            ..ProgressData::default()
+        };
+        Ok(())
+    }
+
+    fn end(&self) {
+        if let Ok(mut d) = self.0.lock() {
+            d.running = false;
+            d.finished_ms = Some(elapsed_ms(d.started));
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ProgressView {
+    running: bool,
+    elapsed_ms: u64,
+    checks: u32,
+    lines: Vec<ProgressLine>,
 }
 
 #[derive(Serialize)]
@@ -125,7 +209,44 @@ pub fn remove_wallet(state: State<'_, AppState>, id: String) -> Result<Vec<Walle
 #[tauri::command]
 pub async fn get_portfolio(state: State<'_, AppState>) -> Result<Portfolio, String> {
     let registry = with_registry(&state, |r| Ok(r.clone()))?;
-    Ok(build_portfolio(&state.http, &state.config, &registry).await)
+    state.progress.begin()?;
+    let result = tokio::time::timeout(
+        REFRESH_TIME_LIMIT,
+        build_portfolio(&state.http, &state.config, &registry, &state.progress),
+    )
+    .await;
+    match &result {
+        Ok(_) => state.progress.step(ProgressLevel::Info, "Refresh finished.".into()),
+        Err(_) => state.progress.step(
+            ProgressLevel::Error,
+            format!(
+                "Stopped after {} seconds: some providers didn't answer in time. See the lines above for which one.",
+                REFRESH_TIME_LIMIT.as_secs()
+            ),
+        ),
+    }
+    state.progress.end();
+    result.map_err(|_| {
+        format!(
+            "The refresh took longer than {} seconds and was stopped. The progress log shows which provider was slow.",
+            REFRESH_TIME_LIMIT.as_secs()
+        )
+    })
+}
+
+#[tauri::command]
+pub fn get_progress(state: State<'_, AppState>) -> Result<ProgressView, String> {
+    let d = state.progress.0.lock().map_err(|_| LOCK_ERR.to_owned())?;
+    Ok(ProgressView {
+        running: d.running,
+        elapsed_ms: if d.running {
+            elapsed_ms(d.started)
+        } else {
+            d.finished_ms.unwrap_or(0)
+        },
+        checks: d.checks,
+        lines: d.lines.iter().cloned().collect(),
+    })
 }
 
 #[derive(Serialize)]
@@ -223,7 +344,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            5,
+            6,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");
