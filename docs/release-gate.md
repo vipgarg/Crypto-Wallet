@@ -45,6 +45,7 @@ Still to do for this gate: Ethereum (compare with etherscan.io) and Bitcoin (com
 | Allowance and permission baselines recorded | ⏳ Not built |
 | Poisoning-style 0-value transfer detected and hidden | 🔧 Built for TRON (`5a51049`, `0452a4f`; unit-tested with a real Base58 look-alike address). Live check with a testnet 0-value transfer still to do. Ethereum and Bitcoin history not built yet. |
 | No secret-handling code paths in the online app | ✅ By design; registry refuses seeds/private keys (tested) |
+| Start-up checks and login (§9.8) | 🔧 Built: password + TOTP, encrypted store, lockout, idle lock, PC checks. Tested end-to-end on Linux (setup with migration, wrong code, login, lock, checks page). Windows-specific checks compiled for Windows and parser-tested; **first run on the owner's Windows PC still to do.** |
 
 ### Alert tests (docs/alerts-guide.md step 6)
 

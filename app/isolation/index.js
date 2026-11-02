@@ -10,6 +10,12 @@ const ALLOWED = new Set([
   "app_info",
   "get_progress",
   "get_activity",
+  "auth_status",
+  "setup_begin",
+  "setup_finish",
+  "unlock",
+  "lock",
+  "startup_checks",
 ]);
 
 window.__TAURI_ISOLATION_HOOK__ = (payload) => {

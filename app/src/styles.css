@@ -157,6 +157,26 @@ tr.row-warn td { background: var(--bad-bg); }
 .flag-other_contract, .flag-failed { color: var(--warn); }
 .flag-trc10 { color: var(--warn); }
 
+/* Login, setup and checks */
+.auth { max-width: 640px; margin: 32px auto; padding: 0 16px; }
+.auth h1 { font-size: 22px; }
+.auth ol { padding-left: 20px; }
+.qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 12px 0; }
+.qr { background: #fff; padding: 4px; border-radius: 6px; }
+.secret { font-size: 15px; letter-spacing: 1px; text-align: center; }
+input.code { font-size: 20px; letter-spacing: 6px; max-width: 200px; }
+button.secondary { background: transparent; color: var(--accent); }
+button.lock-btn { margin-left: 12px; background: transparent; color: var(--text); border-color: var(--border); }
+.check-list { list-style: none; padding: 0; margin: 8px 0; }
+.check { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.check-icon { font-weight: 700; width: 22px; text-align: center; flex-shrink: 0; }
+.check-title { font-weight: 600; }
+.check-detail { color: var(--muted); font-size: 13px; word-break: break-word; }
+.check-pass .check-icon, .ok-text { color: var(--ok); }
+.check-warn .check-icon { color: var(--warn); }
+.check-fail .check-icon { color: var(--bad); }
+.check-unknown .check-icon, .check-not_applicable .check-icon { color: var(--muted); }
+
 /* Tauri's isolation-pattern frame (ARCHITECTURE.md §9.1). It must stay in the
    page to filter IPC, but it has no visible content. */
 iframe#__tauri_isolation__ { display: none; }

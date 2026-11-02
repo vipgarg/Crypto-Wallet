@@ -216,6 +216,32 @@ pub mod rpc {
         })
     }
 
+    /// Latest block header (without transactions), for its timestamp.
+    pub fn eth_latest_block() -> Value {
+        json!({"jsonrpc": "2.0", "id": 1, "method": "eth_getBlockByNumber", "params": ["latest", false]})
+    }
+
+    /// Unix timestamp (seconds) of a block returned by `eth_getBlockByNumber`.
+    pub fn parse_block_timestamp(resp: &Value) -> Result<u64, RpcError> {
+        if let Some(err) = resp.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            return Err(RpcError::Provider(msg.chars().take(200).collect()));
+        }
+        let ts = resp
+            .get("result")
+            .and_then(|r| r.get("timestamp"))
+            .and_then(Value::as_str)
+            .ok_or(RpcError::Malformed)?;
+        let body = ts.strip_prefix("0x").ok_or(RpcError::Malformed)?;
+        if body.is_empty() || body.len() > 16 {
+            return Err(RpcError::Malformed);
+        }
+        u64::from_str_radix(body, 16).map_err(|_| RpcError::Malformed)
+    }
+
     pub fn eth_block_number() -> Value {
         json!({"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []})
     }
@@ -376,6 +402,23 @@ mod tests {
             "0x70a082310000000000000000000000005aaeb6053f3e94c9b9a09f33669435e7ef1beaed"
         );
         assert_eq!(req["params"][1], "latest");
+    }
+
+    #[test]
+    fn parses_block_timestamp() {
+        assert_eq!(
+            rpc::parse_block_timestamp(&json!({"result": {"timestamp": "0x6553f100"}})),
+            Ok(1_700_000_000)
+        );
+        assert_eq!(
+            rpc::parse_block_timestamp(&json!({"result": {}})),
+            Err(rpc::RpcError::Malformed)
+        );
+        assert_eq!(
+            rpc::parse_block_timestamp(&json!({"result": {"timestamp": "12"}})),
+            Err(rpc::RpcError::Malformed)
+        );
+        assert_eq!(rpc::eth_latest_block()["params"][0], "latest");
     }
 
     #[test]

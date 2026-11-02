@@ -427,6 +427,24 @@ impl<'a, H: HttpClient> Sources<'a, H> {
         Err(errors.join("; "))
     }
 
+    /// Latest Ethereum block time from every Ethereum provider (for the PC
+    /// clock check). Providers that fail are left out.
+    pub async fn eth_block_times(&self) -> Vec<(String, u64)> {
+        let futures = self
+            .config
+            .providers_for(Network::Ethereum)
+            .map(|p| async move {
+                let r = self
+                    .http
+                    .post_json(&p.base_url, &rpc::eth_latest_block())
+                    .await;
+                r.ok()
+                    .and_then(|v| rpc::parse_block_timestamp(&v).ok())
+                    .map(|ts| (p.id.clone(), ts))
+            });
+        join_all(futures).await.into_iter().flatten().collect()
+    }
+
     pub async fn btc_address(&self, addr: &BtcAddress) -> CrossChecked<ConfirmedBtcFacts> {
         self.btc_address_timed(addr).await.result
     }

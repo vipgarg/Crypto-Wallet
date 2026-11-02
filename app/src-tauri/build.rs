@@ -10,6 +10,12 @@ const COMMANDS: &[&str] = &[
     "app_info",
     "get_progress",
     "get_activity",
+    "auth_status",
+    "setup_begin",
+    "setup_finish",
+    "unlock",
+    "lock",
+    "startup_checks",
 ];
 
 fn main() {

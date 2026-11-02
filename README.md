@@ -15,9 +15,13 @@ A personal self-custody wallet, built in phases. This repository currently conta
 | Cross-checking | Every balance is asked of **2 independent providers per network**. Identical answers = *Verified*. One answer = *Unverified*. Different answers = *Sources disagree* (no value shown, no majority vote). Totals only add verified balances. |
 | Pinned contracts | USDT contract addresses are compiled in (`config/networks.v1.toml`); the app shows the config's SHA-256 on the About page. |
 | Privacy | The Bitcoin xpub never leaves your PC: providers are only asked about individual addresses. The UI shows only the xpub's fingerprint. |
+| Login | First run: choose a password and link an authenticator app (QR code). Every start: password + 6-digit code. The wallet list is encrypted on disk (Argon2id + XChaCha20-Poly1305). Increasing delays on wrong attempts, 30-minute lock after 5. Auto-lock after 5 minutes idle, and a Lock button. |
+| PC safety checks | Shown on the login screen and the Checks page: Windows Defender, Windows updates, admin account, remote-access tools / Remote Desktop, proxy, PC clock vs blockchain time, app file fingerprint, config hash. They catch mistakes and simple malware; admin-level malware can fake them. |
 | Security boundary | Tauri 2 with a strict Content-Security-Policy, the isolation pattern, a capability file allowing exactly 5 commands, navigation locked to the app, no plugins (no shell/fs/http/updater). |
 
-**Not built yet** (next increments of Phase 1): transaction history with dust/poisoning hiding, receive-address QR codes, start-up checks and login (§9.8), audit log and policy checkpoints, explorer-alert setup guide.
+**Also built:** TRON activity (transfers and transactions) with address-poisoning detection.
+
+**Not built yet:** receive-address QR codes, Ethereum and Bitcoin activity, audit log and policy checkpoints.
 
 ## Repository layout
 

@@ -15,6 +15,10 @@ crate-type = ["rlib"]
 tauri-build = { version = "2.5", features = ["isolation"] }
 
 [dependencies]
+auth = { path = "../../crates/auth" }
+sys-checks = { path = "../../crates/sys-checks" }
+qrcode = { version = "0.14", default-features = false }
+zeroize = "1"
 data-sources = { path = "../../crates/data-sources" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

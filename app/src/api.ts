@@ -158,14 +158,56 @@ export interface WalletActivity {
   permission_changes: number;
 }
 
+export interface AuthStatus {
+  state: "needs_setup" | "locked" | "unlocked";
+  wait_secs: number;
+  has_legacy_wallets: boolean;
+}
+
+export interface SetupInfo {
+  secret: string;
+  qr_size: number;
+  qr_modules: boolean[];
+}
+
+export type CheckStatus = "pass" | "warn" | "fail" | "unknown" | "not_applicable";
+
+export interface SystemCheck {
+  id: string;
+  title: string;
+  status: CheckStatus;
+  detail: string;
+  blocks_sends: boolean;
+}
+
+/** Fired when Rust reports the session is locked, so the app shows login. */
+export const LOCKED_EVENT = "wallet-locked";
+
+async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    if (typeof e === "string" && e.startsWith("Locked")) {
+      window.dispatchEvent(new Event(LOCKED_EVENT));
+    }
+    throw e;
+  }
+}
+
 export const api = {
-  listWallets: () => invoke<WalletView[]>("list_wallets"),
-  addWallet: (input: NewWalletInput) => invoke<WalletView[]>("add_wallet", { input }),
-  removeWallet: (id: string) => invoke<WalletView[]>("remove_wallet", { id }),
-  getPortfolio: () => invoke<Portfolio>("get_portfolio"),
-  appInfo: () => invoke<AppInfo>("app_info"),
-  getProgress: () => invoke<Progress>("get_progress"),
-  getActivity: (id: string) => invoke<WalletActivity>("get_activity", { id }),
+  listWallets: () => call<WalletView[]>("list_wallets"),
+  addWallet: (input: NewWalletInput) => call<WalletView[]>("add_wallet", { input }),
+  removeWallet: (id: string) => call<WalletView[]>("remove_wallet", { id }),
+  getPortfolio: () => call<Portfolio>("get_portfolio"),
+  appInfo: () => call<AppInfo>("app_info"),
+  getProgress: () => call<Progress>("get_progress"),
+  getActivity: (id: string) => call<WalletActivity>("get_activity", { id }),
+  authStatus: () => call<AuthStatus>("auth_status"),
+  setupBegin: () => call<SetupInfo>("setup_begin"),
+  setupFinish: (password: string, code: string) => call<void>("setup_finish", { password, code }),
+  unlock: (password: string, code: string) => call<void>("unlock", { password, code }),
+  lock: () => call<void>("lock"),
+  startupChecks: () => call<SystemCheck[]>("startup_checks"),
 };
 
 export function errorText(e: unknown): string {

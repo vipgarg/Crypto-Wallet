@@ -1,14 +1,15 @@
 //! Watch-only wallet desktop app. Holds no seeds or private keys.
 
 pub mod commands;
+pub mod session;
 
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use data_sources::{NetworkConfig, ReqwestClient};
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
-use wallet_core::Registry;
 
 use commands::AppState;
+use session::{Paths, SessionState};
 
 /// Only the app's own pages may load in the window (§9.1): navigation to any
 /// other URL is blocked.
@@ -26,13 +27,13 @@ pub fn run() {
     tauri::Builder::default()
         .setup(move |app| {
             let dir = app.path().app_data_dir()?;
-            let registry_path = dir.join("wallets.json");
-            let registry = Registry::load(&registry_path).map_err(|e| {
-                format!("The wallet list file can't be read ({e}). It has not been changed. See docs/incident-runbook.md.")
+            let session = SessionState::load(Paths {
+                store: dir.join("store.v1.json"),
+                legacy_registry: dir.join("wallets.json"),
+                lockout: dir.join("lockout.json"),
             });
             app.manage(AppState {
-                registry: Mutex::new(registry),
-                registry_path,
+                session: Arc::new(session),
                 config,
                 http,
                 progress: commands::ProgressState::default(),
@@ -54,6 +55,12 @@ pub fn run() {
             commands::app_info,
             commands::get_progress,
             commands::get_activity,
+            commands::auth_status,
+            commands::setup_begin,
+            commands::setup_finish,
+            commands::unlock,
+            commands::lock,
+            commands::startup_checks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

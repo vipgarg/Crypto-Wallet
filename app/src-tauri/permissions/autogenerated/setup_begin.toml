@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-setup-begin"
+description = "Enables the setup_begin command without any pre-configured scope."
+commands.allow = ["setup_begin"]
+
+[[permission]]
+identifier = "deny-setup-begin"
+description = "Denies the setup_begin command without any pre-configured scope."
+commands.deny = ["setup_begin"]

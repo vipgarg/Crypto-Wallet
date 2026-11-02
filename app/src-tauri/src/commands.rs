@@ -9,8 +9,7 @@
 //!   script, and the test at the bottom of this file enforces the first.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chain_btc::BtcAddress;
@@ -27,12 +26,13 @@ use wallet_core::{
     WatchWallet,
 };
 use wallet_types::Tier;
+use zeroize::Zeroizing;
+
+use crate::session::{AuthStatus, SessionState, SetupInfo};
 
 pub struct AppState {
-    /// `Err` if the wallet file on disk is corrupted: the app then refuses to
-    /// change it (never silently replaced, §9.7).
-    pub registry: Mutex<Result<Registry, String>>,
-    pub registry_path: PathBuf,
+    /// Login state and the encrypted wallet list (session.rs).
+    pub session: Arc<SessionState>,
     pub config: NetworkConfig,
     pub http: ReqwestClient,
     pub progress: ProgressState,
@@ -166,20 +166,14 @@ fn views(r: &Registry) -> Vec<WalletView> {
     r.wallets.iter().map(WalletView::from).collect()
 }
 
-fn with_registry<T>(
-    state: &AppState,
-    f: impl FnOnce(&mut Registry) -> Result<T, String>,
-) -> Result<T, String> {
-    let mut guard = state.registry.lock().map_err(|_| LOCK_ERR.to_owned())?;
-    match guard.as_mut() {
-        Ok(reg) => f(reg),
-        Err(e) => Err(e.clone()),
-    }
+/// Read the wallet list (requires login; counts as activity).
+fn read_registry(state: &AppState) -> Result<Registry, String> {
+    state.session.with_registry(true, false, |r| Ok(r.clone()))
 }
 
 #[tauri::command]
 pub fn list_wallets(state: State<'_, AppState>) -> Result<Vec<WalletView>, String> {
-    with_registry(&state, |r| Ok(views(r)))
+    state.session.with_registry(true, false, |r| Ok(views(r)))
 }
 
 #[tauri::command]
@@ -188,11 +182,8 @@ pub fn add_wallet(
     input: NewWalletInput,
 ) -> Result<Vec<WalletView>, String> {
     let wallet = input.validate().map_err(|e| e.to_string())?;
-    with_registry(&state, |r| {
-        let mut next = r.clone();
-        next.add(wallet).map_err(|e| e.to_string())?;
-        next.save(&state.registry_path).map_err(|e| e.to_string())?;
-        *r = next;
+    state.session.with_registry(true, true, |r| {
+        r.add(wallet).map_err(|e| e.to_string())?;
         Ok(views(r))
     })
 }
@@ -202,18 +193,15 @@ pub fn remove_wallet(state: State<'_, AppState>, id: String) -> Result<Vec<Walle
     if id.len() > 32 {
         return Err("Unknown wallet.".into());
     }
-    with_registry(&state, |r| {
-        let mut next = r.clone();
-        next.remove(&id).map_err(|e| e.to_string())?;
-        next.save(&state.registry_path).map_err(|e| e.to_string())?;
-        *r = next;
+    state.session.with_registry(true, true, |r| {
+        r.remove(&id).map_err(|e| e.to_string())?;
         Ok(views(r))
     })
 }
 
 #[tauri::command]
 pub async fn get_portfolio(state: State<'_, AppState>) -> Result<Portfolio, String> {
-    let registry = with_registry(&state, |r| Ok(r.clone()))?;
+    let registry = read_registry(&state)?;
     state.progress.begin()?;
     let result = tokio::time::timeout(
         REFRESH_TIME_LIMIT,
@@ -250,7 +238,7 @@ pub async fn get_activity(
     if id.len() > 32 {
         return Err("Unknown wallet.".into());
     }
-    let registry = with_registry(&state, |r| Ok(r.clone()))?;
+    let registry = read_registry(&state)?;
     let wallet = registry
         .wallets
         .iter()
@@ -311,6 +299,8 @@ pub async fn get_activity(
 
 #[tauri::command]
 pub fn get_progress(state: State<'_, AppState>) -> Result<ProgressView, String> {
+    // Requires login, but polling doesn't count as activity.
+    state.session.with_registry(false, false, |_| Ok(()))?;
     let d = state.progress.0.lock().map_err(|_| LOCK_ERR.to_owned())?;
     Ok(ProgressView {
         running: d.running,
@@ -375,6 +365,86 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Login (§9.8)
+// ---------------------------------------------------------------------------
+
+fn blocking_err(_: tauri::Error) -> String {
+    LOCK_ERR.to_owned()
+}
+
+#[tauri::command]
+pub fn auth_status(state: State<'_, AppState>) -> Result<AuthStatus, String> {
+    state.session.status()
+}
+
+#[tauri::command]
+pub fn setup_begin(state: State<'_, AppState>) -> Result<SetupInfo, String> {
+    state.session.setup_begin()
+}
+
+/// Password hashing (Argon2id) is deliberately slow, so it runs off the UI thread.
+#[tauri::command]
+pub async fn setup_finish(
+    state: State<'_, AppState>,
+    password: String,
+    code: String,
+) -> Result<(), String> {
+    let password = Zeroizing::new(password);
+    let session = Arc::clone(&state.session);
+    tauri::async_runtime::spawn_blocking(move || session.setup_finish(&password, &code))
+        .await
+        .map_err(blocking_err)?
+}
+
+#[tauri::command]
+pub async fn unlock(
+    state: State<'_, AppState>,
+    password: String,
+    code: String,
+) -> Result<(), String> {
+    let password = Zeroizing::new(password);
+    let session = Arc::clone(&state.session);
+    tauri::async_runtime::spawn_blocking(move || session.unlock(&password, &code))
+        .await
+        .map_err(blocking_err)?
+}
+
+#[tauri::command]
+pub fn lock(state: State<'_, AppState>) {
+    state.session.lock();
+}
+
+// ---------------------------------------------------------------------------
+// Start-up checks (§9.8)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn startup_checks(state: State<'_, AppState>) -> Result<Vec<sys_checks::Check>, String> {
+    let local = tauri::async_runtime::spawn_blocking(sys_checks::run_local_checks);
+    let sources = Sources::new(&state.http, &state.config);
+    let block_times = tokio::time::timeout(Duration::from_secs(20), sources.eth_block_times())
+        .await
+        .unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut checks = local.await.map_err(blocking_err)?;
+    checks.push(sys_checks::evaluate_clock(now, &block_times));
+    checks.push(sys_checks::Check {
+        id: "config",
+        title: "Network config",
+        status: sys_checks::Status::Pass,
+        detail: format!(
+            "SHA-256 {}. Compare with the value recorded for the reviewed release.",
+            state.config.sha256
+        ),
+        blocks_sends: false,
+    });
+    Ok(checks)
+}
+
 #[cfg(test)]
 mod tests {
     /// CI guard (§9.1): every `#[tauri::command]` must be on the reviewed list
@@ -419,7 +489,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            7,
+            13,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

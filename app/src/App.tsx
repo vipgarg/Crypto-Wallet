@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ChecksPanel, LoginScreen, SetupScreen } from "./Auth";
 import {
+  LOCKED_EVENT,
+  type AuthStatus,
   api,
   errorText,
   type AppInfo,
@@ -15,7 +18,7 @@ import {
   type WalletView,
 } from "./api";
 
-type Page = "portfolio" | "activity" | "wallets" | "about";
+type Page = "portfolio" | "activity" | "wallets" | "checks" | "about";
 
 const STATUS_TEXT: Record<BalanceStatus, string> = {
   verified: "Verified (2+ sources agree)",
@@ -683,9 +686,32 @@ function ActivityPage() {
   );
 }
 
-export default function App() {
+/** Lock after this long without keyboard or mouse use (Rust enforces it too). */
+const IDLE_LOCK_MS = 5 * 60 * 1000;
+
+function MainApp({ onLock }: { onLock: () => void }) {
   const [page, setPage] = useState<Page>("portfolio");
   const portfolio = usePortfolio();
+
+  // Idle lock: any key, click or mouse move counts as activity.
+  useEffect(() => {
+    let last = Date.now();
+    const touch = () => {
+      last = Date.now();
+    };
+    const events = ["mousemove", "mousedown", "keydown", "wheel", "touchstart"];
+    events.forEach((e) => window.addEventListener(e, touch, { passive: true }));
+    const timer = window.setInterval(() => {
+      if (Date.now() - last > IDLE_LOCK_MS) {
+        void api.lock().finally(onLock);
+      }
+    }, 15_000);
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, touch));
+      window.clearInterval(timer);
+    };
+  }, [onLock]);
+
   return (
     <div className="app">
       <header>
@@ -693,19 +719,51 @@ export default function App() {
           Watch-Only Wallet <span className="tag">no keys on this computer</span>
         </div>
         <nav>
-          {(["portfolio", "activity", "wallets", "about"] as Page[]).map((p) => (
+          {(["portfolio", "activity", "wallets", "checks", "about"] as Page[]).map((p) => (
             <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
               {p[0].toUpperCase() + p.slice(1)}
             </button>
           ))}
+          <button className="lock-btn" onClick={() => void api.lock().finally(onLock)} title="Lock the app now">
+            🔒 Lock
+          </button>
         </nav>
       </header>
       <main>
         {page === "portfolio" && <PortfolioPage state={portfolio} />}
         {page === "activity" && <ActivityPage />}
         {page === "wallets" && <WalletsPage onChanged={portfolio.markStale} />}
+        {page === "checks" && (
+          <section>
+            <h2>PC safety checks</h2>
+            <ChecksPanel />
+          </section>
+        )}
         {page === "about" && <AboutPage />}
       </main>
     </div>
   );
+}
+
+/** Decides between first-run setup, login and the app itself. */
+export default function App() {
+  const [status, setStatus] = useState<AuthStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    api.authStatus().then(setStatus, (e) => setError(errorText(e)));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const onLocked = () => refresh();
+    window.addEventListener(LOCKED_EVENT, onLocked);
+    return () => window.removeEventListener(LOCKED_EVENT, onLocked);
+  }, [refresh]);
+
+  if (error) return <p className="error">{error}</p>;
+  if (!status) return null;
+  if (status.state === "needs_setup") return <SetupScreen hasLegacy={status.has_legacy_wallets} onDone={refresh} />;
+  if (status.state === "locked") return <LoginScreen waitSecs={status.wait_secs} onDone={refresh} />;
+  return <MainApp onLock={refresh} />;
 }
