@@ -11,6 +11,8 @@ ignore = []
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
+# Internal path dependencies between our own unpublished crates are fine.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
