@@ -1,6 +1,6 @@
 # Personal Self-Custody Wallet — Security Architecture
 
-**Status:** Design, revision 4 (offline-laptop signer replaces hardware wallets, see §14C). Nothing is built yet. **Not ready for real funds** until the §15 release sequence completes.
+**Status:** Design, revision 4.1 (offline-laptop signer replaces hardware wallets, see §14C; lessons from the Binance 2026 and Bybit 2025 incidents added, see §14D). Nothing is built yet. **Not ready for real funds** until the §15 release sequence completes.
 **Owner:** Vipul
 **Platforms:** **Online PC:** Windows 10/11, watch-only, holds no secrets. **Offline signer:** a dedicated laptop running minimal Linux, never connected to any network, signs for every wallet.
 **Assets:** BTC, USDT on Tron (TRC-20), USDT on Ethereum (ERC-20)
@@ -26,7 +26,7 @@
 | 11. Phased roadmap | What gets built in which order, with exit gates |
 | 12. Threat → control map | Which control stops which threat, and in which phase |
 | 13. Open decisions | Choices you still need to make |
-| 14. Gap reviews & revisions (rev 2, rev 3, rev 4) | Each finding from the external reviews, and what rev 4 changed |
+| 14. Gap reviews, revisions & incident lessons (rev 2, 3, 4, 4.1) | Each finding from the external reviews, what rev 4 changed, and what real exchange hacks teach this design |
 | 15. Mainnet release sequence & gate | The exact order and checklist before any real funds touch the custom software |
 
 Every phase in section 11 has an **exit gate**. Do not start the next phase until its gate passes. Phase 4 (real funds) also needs the full **§15 release sequence**.
@@ -102,6 +102,7 @@ Every phase in section 11 has an **exit gate**. Do not start the next phase unti
 | T18 | **(rev 4) Offline signer theft or tampering** | Laptop stolen and attacked offline; an "evil maid" opens it or installs a keylogger while you're away, then waits for you to type passwords or show a SeedQR | High |
 | T19 | **(rev 4) Air-gap breach** | Wi-Fi/Bluetooth re-enabled; an infected USB stick; a malicious QR payload exploiting a parser bug on the signer; a malicious signer build leaking key bits through signature data | Critical |
 | T20 | **(rev 4) Seed exposure during stateless signing** | A SeedQR card photographed, lost or seen while it's out of storage, or while it's carried between a backup location and the signer | High |
+| T21 | **(rev 4.1) Compromised developer machine / developer social engineering** | You are the developer. A fake job offer, a "coding test" repository, a malicious npm/crates package or a trojanised tool infects your development machine, and the attacker plants code in the signer or online app, or reaches the build VM. This is how the Binance 2026 (DevOps laptop) and Bybit 2025 (developer machine at the wallet-UI provider) attacks started | Critical |
 
 ### 2.3 What the design assumes
 
@@ -139,6 +140,7 @@ These rules apply to every phase. Code review checks against them.
 | P15 | **Independent review before real funds** | The signer app, the signing path and both release builds are reviewed by someone other than the author before Phase 4 (§15). |
 | P16 | **Air gap by QR only** (rev 4) | No network, Wi-Fi, Bluetooth or cable between the two machines. Transactions cross only as QR codes. USB on the signer is allowed only to install a reviewed signer release and (optionally) to read the vault keyfile. |
 | P17 | **One wallet unlocked at a time, for one signing session** (rev 4) | Each wallet has its own vault and password; unlocking one never decrypts another. Vault-tier seeds are **stateless** (never stored). Secrets are wiped right after signing. |
+| P18 | **No automatic or batch signing, ever** (rev 4.1) | Every signature needs a separate human decision on the signer screen for that one transaction (§7 ⑦d). There is no auto-approve, "trusted requester", scheduled, API-driven or "sign all" mode, and none may be added later for convenience. The only multi-signature session is the two keys of one BTC multisig spend, and each is still approved on screen. This is the exact weakness behind the Binance 2026 theft (§14D). Code review and CI check that the signer has no code path that signs without the approval screen. |
 
 ---
 
@@ -852,6 +854,18 @@ The ERC-20 validator correctly rejects Safe transactions; Safe signing is a diff
 | Updates (Phase 6 only) | If the Tauri updater is ever enabled: its signing key is generated and kept **offline** (encrypted USB, not on the build VM). The app verifies the update signature, refuses **downgrades**, and asks before installing. |
 | (rev 3) Build evidence kept | A clean dependency scan doesn't prove a build is trustworthy. For each release, `docs/releases/<version>/` keeps: the reviewed source commit hash, toolchain versions (`rustc`, `cargo`, `node`, `npm`, Tauri CLI), hashes of `Cargo.lock` / `package-lock.json`, the scan outputs, build logs from both builds, installer + core binary SHA-256, and the reviewer's report. |
 | (rev 3) Operational separation | You are both developer and operator, so a release you change can't be silently treated as reviewed. The reviewer's report names the **exact commit and installer hash** they reviewed, and the reviewer keeps their own copy. Before installing on the wallet PC you compare the installer hash with **the reviewer's copy** (not just your own notes). Any rebuild, patch or config change after review = **unreviewed release** → the §15 release configuration falls back to "no custom signing for Savings or Vault". |
+**Developer-machine separation & social-engineering rules (rev 4.1, T21).** The Binance and Bybit attacks (§14D) both started on an engineer's computer. You are the only engineer here, so:
+
+| Rule | Detail |
+|---|---|
+| Three separate roles | (1) **Development machine**: where you write and test code. (2) **Build VM**: produces release builds only (above). (3) **Online wallet PC account**: runs only the installed, reviewed release. No role is ever used for another's job. The offline signer is a fourth, completely separate machine. |
+| No path from development to signing | The development machine has no access to the build VM's signing token, the signer-install USB, the wallet PC account or the monitor's credentials. A compromised development machine can produce bad code, but that code only reaches the signer through the build VM, the two-build check and the reviewer's hash (§9.3, §15). |
+| Never run strangers' code | No interview "coding tests", take-home tasks, "please check my repo", trading bots, cracked tools or browser extensions from unknown sources on the development machine. If you must look at such code, do it in a disposable VM with no access to your accounts, then delete the VM. |
+| Dependencies | New dependencies are added only after checking the maintainer, download history and source; `npm ci --ignore-scripts` everywhere; typosquatted names are checked by hand. Crates in the signing path are reviewed diff by diff (`cargo vet`). |
+| Accounts | Code hosting (GitHub) and package registry accounts use a hardware security key for 2FA where possible; commits to the release branch are signed; branch protection on the release branch. |
+| Messages | Treat unsolicited job offers, "investor" or "partnership" chats, and anyone sending you files or links on Telegram/LinkedIn/WhatsApp as possible Lazarus-style approaches. Never open their files on any wallet-related machine. |
+| Reviewer independence | The reviewer gets the source from the repository, not from your machine, and builds or hashes it independently (§9.3 "Operational separation"). |
+
 - Download wallets, VeraCrypt, Sparrow etc. only from official sites, and verify signatures/hashes.
 - If a hardware wallet is bought later (D1): **directly from the manufacturer**, never second-hand or from marketplaces; run the device-authenticity check on first use.
 
@@ -1232,6 +1246,9 @@ Only if you later decide it's worth the cost and complexity. **Nothing in this d
 | T18 (rev 4) Offline signer theft or tampering | LUKS2, per-wallet vault passwords, passphrases never stored, stateless Vault, BIOS lock, tamper seals, locked storage | 0, 2, 3 |
 | T19 (rev 4) Air-gap breach / hostile QR / exfiltration | Radios removed + start-up network check, QR only, strict fuzzed decoders, no WebView on the signer, RFC 6979 deterministic signatures, reviewed reproducible signer build | 0, 2, 3 |
 | T20 (rev 4) Seed exposure during stateless signing | SeedQR cards in sealed bags, used only in front of the signer, returned the same day, rare Vault use | 5, 6 |
+| T21 (rev 4.1) Compromised developer machine | Developer/build/wallet-PC separation, never running strangers' code, reviewed dependencies, build VM + two-build check, independent reviewer with their own hash, P18 human approval for every signature | 0, 1, 2, 3 |
+| Automated signing abuse (Binance 2026 pattern) | P18 no automatic signing; signer accepts only QR input; signer allowlist and limits | 2, 3 |
+| Fake UI / hidden operation (Bybit 2025 pattern) | Signer decodes raw bytes (P14), no blind signing (P4), closed operation list (P13) | 2, 3 |
 | Full online-PC compromise bypassing review/policy | Signer = authorization boundary (§0, §7 ⑦d), signer's own allowlist/limits, keys off the online PC, independent monitor | 0, 1, 2, 3 |
 | Policy rollback / clock manipulation | Separate `policy.db`, monotonic checkpoints at the monitor, trusted chain+monitor time, signer's own log and clock, fail closed (§9.5) | 1, 2 |
 | Silent monitoring (PC off/compromised) | Separate monitor device, 2 channels + explorer alerts, heartbeat, offline test (§10.0) | 1 |
@@ -1259,6 +1276,7 @@ Only if you later decide it's worth the cost and complexity. **Nothing in this d
 | D14 | **(rev 4) QR encoding** | Animated fountain-coded QR (BC-UR style) for transactions; CompactSeedQR for seeds | Phase 2 |
 | D15 | **(rev 4) Online login second factor** | TOTP for v1; upgrade to a FIDO2 security key with `hmac-secret` mixed into the data-store key | Phase 1 |
 | D16 | **(rev 4) Optional signer keyfile** | Yes for Savings if you can store the keyfile USB apart from the laptop; not needed for the stateless Vault | Phase 2 |
+| D17 | **(rev 4.1) Exchange account hygiene** | Exchanges are only for buying/selling INR, never for storage. Keep only what you're trading there and withdraw to your own wallet (Savings receive address, verified on the signer) promptly. On every exchange account: **withdrawal address allowlist** on, with only your own addresses; hardware security key (FIDO2) for 2FA, not SMS; anti-phishing code set; login and withdrawal alerts on; a unique email address and password. After any exchange incident, use only the official app or website; never follow links in messages, never install "recovery" or "compensation" tools, and never share your screen, seed or 2FA codes | Before first deposit |
 
 ---
 
@@ -1404,6 +1422,23 @@ Rev 4 is a design decision rather than an external review: **no hardware wallets
 
 ---
 
+## 14D. Incident lessons: Binance 2026 and Bybit 2025 (rev 4.1)
+
+Preliminary reporting on the Binance theft (2026-10-29, about $6.3–6.4B, attributed by TRM Labs, Chainalysis and Elliptic to North Korea's TraderTraitor/Lazarus) says a **DevOps engineer's laptop was compromised**, giving access to an internal service that could submit withdrawals; **no private keys were stolen**, the hot-wallet signing system signed the attackers' transactions. Binance has not yet published a full root cause. In the Bybit theft (2025-02, about $1.5B, same group), a **developer machine** at the Safe{Wallet} provider was compromised, malicious code was injected into the web UI, and signers approved what looked like a routine transfer; their hardware wallets blind-signed a call that handed the wallet to the attacker.
+
+| Attack step | Their weakness | This design | Where |
+|---|---|---|---|
+| Engineer/developer machine compromised | That machine had a path to the signing system | The online PC can only display a QR code; the signer accepts nothing else. Development, build and wallet PC are separate roles with no path to signing | P16, §9.3 (rev 4.1), T21 |
+| Signing on request | The signing system signed whatever a trusted internal service asked | **No automatic signing, ever**; every signature needs a decision on the signer screen with typed recipient confirmation | P18, §7 ⑦d |
+| Fake screen | Signers trusted the web UI | The signer decodes raw bytes itself; the online screen is never trusted | P3, P14, §0 |
+| Blind-signed hidden operation | Devices showed a hash, not the real call | No blind signing; closed list of plain transfers; `delegatecall`, contract calls and permission changes have no code path | P4, P13, §8.0 |
+| Fast drain | Large hot balance, high withdrawal speed | Spending cap; Vault can only send to own Savings; signer-side per-wallet limits; 24–48 h cool-down for new addresses; monitor alerts within minutes | §4.1, §4.2, §7.4, §10 |
+| Scams after the incident | Users tricked by fake support/compensation | No exchange holds your funds; nobody is ever shown a seed; exchange hygiene rules | §6.3, D17 |
+
+**Residual risk:** this design only stops these attacks if the signer check is done honestly every time (approval fatigue made the Bybit signers approve), and if the signer software itself isn't poisoned through your development machine (T21). Both are covered by controls above, but neither is automatic.
+
+---
+
 ## 15. Mainnet release sequence & gate (rev 3, updated for rev 4)
 
 Record the date and evidence for every step and gate item in `docs/release-gate.md` (test reports, commit hash, installer and signer-image hashes, reviewer's report).
@@ -1420,7 +1455,7 @@ Record the date and evidence for every step and gate item in `docs/release-gate.
 | ② Independent review | ① complete; the builds to review are frozen (commit + online installer hash + signer release hash) | Reviewer's report on those exact hashes; every finding fixed (→ back to ①) or accepted in writing. **G9** |
 | ③ Canary authorization | ② complete with **no changes since** (same hashes), G2 and G6 pass, monitor live (Phase 1 gate) | **You** sign a dated entry in `release-gate.md` stating scope: which wallets, which operations, max **₹500 equivalent per asset**, max 2 weeks. You're the only authorizer; the entry is also sent as a monitor checkpoint |
 | ④ Canary testing | ③ authorized | Each operation in §8.0 done on mainnet within scope; alerts observed (**G10**); a canary loss is accepted as a cost |
-| ⑤ Final release approval | ④ complete with no unexplained events; G1–G12 all ✅; installed builds' hashes = reviewed hashes | Signed, dated approval entry in `release-gate.md` |
+| ⑤ Final release approval | ④ complete with no unexplained events; G1–G13 all ✅; installed builds' hashes = reviewed hashes | Signed, dated approval entry in `release-gate.md` |
 | ⑥ Rollout | ⑤ approved | Phase 4 staging table |
 
 Any code, dependency, signer OS image or config change after ② restarts at ①, and requires a new or delta review at ② before custom signing is used again.
@@ -1452,6 +1487,7 @@ Stored in the signed network config (§9.6), compiled into the signer, and in th
 | G10 | Monitoring works | A canary outgoing tx, a test allowance and a test 0-value poisoning transfer each raise the right alert | §10.1 |
 | G11 | Incident and recovery runbooks exist on paper | `recovery-runbook.md` and `incident-runbook.md` printed and stored with the backups | §6.3, §10.2 |
 | G12 | **(rev 4) The offline signer is air-gapped and physically protected** | Phase 0 signer gate re-checked on the final setup; start-up network check verified with a USB Wi-Fi adapter; seals photographed; BIOS locked | §9.4b |
+| G13 | **(rev 4.1) No signature without a human decision; developer machine separated** | Code review + CI check that every signing path goes through the approval screen (P18); written confirmation that development, build VM and wallet PC are separate and the T21 rules are followed | P18, §9.3, T21 |
 
 ---
 
