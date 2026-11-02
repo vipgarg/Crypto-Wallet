@@ -365,6 +365,263 @@ pub mod history {
         Ok((events, unreadable))
     }
 
+    // ---------------------------------------------------------------------
+    // Account transactions (Tronscan's "Transactions" tab).
+    // ---------------------------------------------------------------------
+
+    pub fn transactions_path(addr: &TronAddress) -> String {
+        format!(
+            "/v1/accounts/{}/transactions?limit={LIMIT}&only_confirmed=true&search_internal=false",
+            addr.to_base58()
+        )
+    }
+
+    /// A decoded call to a TRC-20 contract.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum CallKind {
+        Transfer {
+            to: TronAddress,
+            amount: Option<u128>,
+        },
+        TransferFrom {
+            from: TronAddress,
+            to: TronAddress,
+            amount: Option<u128>,
+        },
+        Approve {
+            spender: TronAddress,
+            amount: Option<u128>,
+        },
+        /// Anything else; the 4-byte function selector in hex.
+        Unknown { selector: String },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum TxAction {
+        /// Plain TRX transfer, amount in sun.
+        TrxTransfer {
+            from: TronAddress,
+            to: TronAddress,
+            amount_sun: u128,
+        },
+        /// Smart-contract call (e.g. USDT transfer or approve).
+        ContractCall {
+            owner: TronAddress,
+            contract: TronAddress,
+            call: CallKind,
+            call_value_sun: u128,
+        },
+        /// Owner/active permissions changed: critical (ARCHITECTURE.md §8.5).
+        PermissionUpdate { owner: TronAddress },
+        /// TRC-10 token transfer (mostly spam).
+        Trc10Transfer {
+            from: TronAddress,
+            to: TronAddress,
+            amount: u128,
+        },
+        /// Staking, unstaking, resource delegation, voting, reward withdrawal.
+        Resource {
+            owner: TronAddress,
+            what: &'static str,
+        },
+        /// Any other contract type, by name.
+        Other {
+            owner: Option<TronAddress>,
+            contract_type: String,
+        },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct TronTx {
+        pub txid: String,
+        pub timestamp_ms: u64,
+        pub success: bool,
+        pub action: TxAction,
+    }
+
+    /// Node APIs return addresses as hex (`41…`) unless asked for Base58.
+    fn addr_any(v: &Value) -> Option<TronAddress> {
+        let s = v.as_str()?;
+        if s.starts_with('T') {
+            s.parse().ok()
+        } else {
+            TronAddress::from_hex(&s.to_ascii_lowercase()).ok()
+        }
+    }
+
+    fn u128_any(v: Option<&Value>) -> Option<u128> {
+        match v {
+            None => Some(0),
+            Some(Value::Number(n)) => n.as_u64().map(u128::from),
+            Some(Value::String(s)) => s.parse::<u128>().ok(),
+            _ => None,
+        }
+    }
+
+    /// ABI word → address (last 20 bytes). The upper 12 bytes must be zero.
+    fn word_address(word: &str) -> Option<TronAddress> {
+        if word.len() != 64 || !word[..24].bytes().all(|b| b == b'0') {
+            return None;
+        }
+        let mut b = [0u8; 20];
+        hex::decode_to_slice(&word[24..], &mut b).ok()?;
+        Some(TronAddress::from_hash20(b))
+    }
+
+    /// ABI word → amount; `None` if above 128 bits (e.g. "unlimited" approvals).
+    fn word_amount(word: &str) -> Option<u128> {
+        if word.len() != 64 {
+            return None;
+        }
+        let (high, low) = word.split_at(32);
+        if high.bytes().any(|b| b != b'0') {
+            return None;
+        }
+        u128::from_str_radix(low, 16).ok()
+    }
+
+    pub fn decode_call(data_hex: &str) -> CallKind {
+        let d = data_hex.trim_start_matches("0x").to_ascii_lowercase();
+        if d.len() < 8 || !d.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return CallKind::Unknown {
+                selector: String::new(),
+            };
+        }
+        let (sel, args) = d.split_at(8);
+        let w = |i: usize| args.get(i * 64..(i + 1) * 64);
+        let unknown = || CallKind::Unknown {
+            selector: sel.to_owned(),
+        };
+        match sel {
+            "a9059cbb" if args.len() == 128 => match (w(0).and_then(word_address), w(1)) {
+                (Some(to), Some(a)) => CallKind::Transfer {
+                    to,
+                    amount: word_amount(a),
+                },
+                _ => unknown(),
+            },
+            "095ea7b3" if args.len() == 128 => match (w(0).and_then(word_address), w(1)) {
+                (Some(spender), Some(a)) => CallKind::Approve {
+                    spender,
+                    amount: word_amount(a),
+                },
+                _ => unknown(),
+            },
+            "23b872dd" if args.len() == 192 => match (
+                w(0).and_then(word_address),
+                w(1).and_then(word_address),
+                w(2),
+            ) {
+                (Some(from), Some(to), Some(a)) => CallKind::TransferFrom {
+                    from,
+                    to,
+                    amount: word_amount(a),
+                },
+                _ => unknown(),
+            },
+            _ => unknown(),
+        }
+    }
+
+    fn resource_label(contract_type: &str) -> Option<&'static str> {
+        Some(match contract_type {
+            "FreezeBalanceContract" | "FreezeBalanceV2Contract" => "Stake TRX (freeze)",
+            "UnfreezeBalanceContract" | "UnfreezeBalanceV2Contract" => "Unstake TRX (unfreeze)",
+            "WithdrawExpireUnfreezeContract" => "Withdraw unstaked TRX",
+            "CancelAllUnfreezeV2Contract" => "Cancel unstaking",
+            "DelegateResourceContract" => "Delegate energy/bandwidth",
+            "UnDelegateResourceContract" => "Reclaim delegated energy/bandwidth",
+            "VoteWitnessContract" => "Vote for super representatives",
+            "WithdrawBalanceContract" => "Claim voting rewards",
+            _ => return None,
+        })
+    }
+
+    fn parse_tx(v: &Value) -> Option<TronTx> {
+        if v.get("internal_tx_id").is_some() {
+            return None;
+        }
+        let txid = v.get("txID")?.as_str()?.to_ascii_lowercase();
+        if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let timestamp_ms = v.get("block_timestamp")?.as_u64()?;
+        let success = v
+            .get("ret")
+            .and_then(Value::as_array)
+            .and_then(|r| r.first())
+            .and_then(|r| r.get("contractRet"))
+            .and_then(Value::as_str)
+            .is_none_or(|s| s == "SUCCESS");
+        let contracts = v.get("raw_data")?.get("contract")?.as_array()?;
+        if contracts.len() != 1 {
+            return None;
+        }
+        let c = &contracts[0];
+        let ty = c.get("type")?.as_str()?;
+        let val = c.get("parameter")?.get("value")?;
+        let owner = val.get("owner_address").and_then(addr_any);
+        let action = match ty {
+            "TransferContract" => TxAction::TrxTransfer {
+                from: owner?,
+                to: addr_any(val.get("to_address")?)?,
+                amount_sun: u128_any(val.get("amount"))?,
+            },
+            "TriggerSmartContract" => TxAction::ContractCall {
+                owner: owner?,
+                contract: addr_any(val.get("contract_address")?)?,
+                call: decode_call(val.get("data").and_then(Value::as_str).unwrap_or("")),
+                call_value_sun: u128_any(val.get("call_value"))?,
+            },
+            "AccountPermissionUpdateContract" => TxAction::PermissionUpdate { owner: owner? },
+            "TransferAssetContract" => TxAction::Trc10Transfer {
+                from: owner?,
+                to: addr_any(val.get("to_address")?)?,
+                amount: u128_any(val.get("amount"))?,
+            },
+            other => match resource_label(other) {
+                Some(what) => TxAction::Resource {
+                    owner: owner?,
+                    what,
+                },
+                None => TxAction::Other {
+                    owner,
+                    contract_type: other
+                        .chars()
+                        .filter(char::is_ascii_alphanumeric)
+                        .take(48)
+                        .collect(),
+                },
+            },
+        };
+        Some(TronTx {
+            txid,
+            timestamp_ms,
+            success,
+            action,
+        })
+    }
+
+    /// Returns the readable transactions and how many entries couldn't be read.
+    pub fn parse_transactions(body: &Value) -> Result<(Vec<TronTx>, usize), HistoryError> {
+        if body.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(HistoryError::NotSuccessful);
+        }
+        let data = body
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or(HistoryError::Malformed)?;
+        let mut txs = Vec::with_capacity(data.len());
+        let mut unreadable = 0;
+        for v in data.iter().take(LIMIT as usize * 2) {
+            match parse_tx(v) {
+                Some(t) => txs.push(t),
+                None => unreadable += 1,
+            }
+        }
+        Ok((txs, unreadable))
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -420,6 +677,83 @@ pub mod history {
             assert_eq!(
                 parse_trc20_history(&json!({"success": true})),
                 Err(HistoryError::Malformed)
+            );
+        }
+
+        fn tx(ty: &str, value: Value, ret: &str) -> Value {
+            json!({
+                "txID": "ef".repeat(32),
+                "block_timestamp": 1_700_000_000_000u64,
+                "ret": [{"contractRet": ret}],
+                "raw_data": {"contract": [{"type": ty, "parameter": {"value": value}}]},
+            })
+        }
+
+        const USDT_HEX: &str = "41a614f803b6fd780986a42c78ec9c7f77e6ded13c";
+
+        #[test]
+        fn parses_transaction_types() {
+            let me = USDT_HEX;
+            let word_addr = format!("{}{}", "0".repeat(24), &USDT_HEX[2..]);
+            let transfer_data = format!("a9059cbb{word_addr}{:064x}", 2_000_000u64);
+            let approve_data = format!("095ea7b3{word_addr}{}", "f".repeat(64));
+            let body = json!({"success": true, "data": [
+                tx("TransferContract", json!({"owner_address": me, "to_address": me, "amount": 5}), "SUCCESS"),
+                tx("TriggerSmartContract", json!({"owner_address": me, "contract_address": USDT_HEX, "data": transfer_data}), "SUCCESS"),
+                tx("TriggerSmartContract", json!({"owner_address": me, "contract_address": USDT_HEX, "data": approve_data}), "SUCCESS"),
+                tx("AccountPermissionUpdateContract", json!({"owner_address": me}), "SUCCESS"),
+                tx("FreezeBalanceV2Contract", json!({"owner_address": me, "frozen_balance": 1}), "SUCCESS"),
+                tx("TransferContract", json!({"owner_address": me, "to_address": me, "amount": 1}), "REVERT"),
+                tx("SomethingNewContract", json!({"owner_address": me}), "SUCCESS"),
+                json!({"internal_tx_id": "x", "data": {}}),
+                json!({"txID": "short"}),
+            ]});
+            let (txs, unreadable) = parse_transactions(&body).expect("parse");
+            assert_eq!(unreadable, 2);
+            assert!(matches!(
+                txs[0].action,
+                TxAction::TrxTransfer { amount_sun: 5, .. }
+            ));
+            assert!(matches!(
+                &txs[1].action,
+                TxAction::ContractCall {
+                    call: CallKind::Transfer {
+                        amount: Some(2_000_000),
+                        ..
+                    },
+                    ..
+                }
+            ));
+            assert!(matches!(
+                &txs[2].action,
+                TxAction::ContractCall {
+                    call: CallKind::Approve { amount: None, .. },
+                    ..
+                }
+            ));
+            assert!(matches!(txs[3].action, TxAction::PermissionUpdate { .. }));
+            assert!(matches!(
+                txs[4].action,
+                TxAction::Resource {
+                    what: "Stake TRX (freeze)",
+                    ..
+                }
+            ));
+            assert!(!txs[5].success);
+            assert!(
+                matches!(&txs[6].action, TxAction::Other { contract_type, .. } if contract_type == "SomethingNewContract")
+            );
+        }
+
+        #[test]
+        fn decode_call_is_strict() {
+            assert!(matches!(decode_call("a9059cbb"), CallKind::Unknown { .. }));
+            assert!(matches!(decode_call("zz"), CallKind::Unknown { .. }));
+            // Dirty upper bytes in an address word → not decoded as a transfer.
+            let dirty = format!("a9059cbb{}{}", "1".repeat(64), "0".repeat(64));
+            assert!(matches!(decode_call(&dirty), CallKind::Unknown { .. }));
+            assert!(
+                matches!(decode_call("12345678"), CallKind::Unknown { selector } if selector == "12345678")
             );
         }
 

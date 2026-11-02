@@ -150,6 +150,12 @@ table.activity td { vertical-align: top; font-size: 13px; }
 .flag-approval, .flag-look_alike, .flag-fake_token { color: var(--bad); font-weight: 600; }
 .flag-zero_value, .flag-dust, .flag-unknown_token { color: var(--warn); }
 tr.row-warn td { background: var(--bad-bg); }
+.tabs { display: flex; gap: 4px; margin: 16px 0 0; border-bottom: 1px solid var(--border); }
+.tabs button { background: transparent; color: var(--text); border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; }
+.tabs button.active { background: var(--surface); border-color: var(--border); color: var(--accent); font-weight: 600; }
+.flag-spent_by_other, .flag-permission_change { color: var(--bad); font-weight: 600; }
+.flag-other_contract, .flag-failed { color: var(--warn); }
+.flag-trc10 { color: var(--warn); }
 
 /* Tauri's isolation-pattern frame (ARCHITECTURE.md §9.1). It must stay in the
    page to filter IPC, but it has no visible content. */

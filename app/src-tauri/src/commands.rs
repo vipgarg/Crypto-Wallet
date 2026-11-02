@@ -18,7 +18,10 @@ use data_sources::fetch::Sources;
 use data_sources::{NetworkConfig, ReqwestClient};
 use serde::Serialize;
 use tauri::State;
-use wallet_core::activity::{classify_tron, summarize, KnownAddress, WalletActivity};
+use wallet_core::activity::{
+    classify_tron_transactions, classify_tron_with_known, known_counterparties, summarize,
+    transactions_view, KnownAddress, WalletActivity,
+};
 use wallet_core::{
     build_portfolio, BtcWatch, NewWalletInput, Portfolio, ProgressLevel, ProgressSink, Registry,
     WatchWallet,
@@ -270,18 +273,40 @@ pub async fn get_activity(
         .filter(|k| k.address != me)
         .collect();
     let sources = Sources::new(&state.http, &state.config);
-    let history = tokio::time::timeout(ACTIVITY_TIME_LIMIT, sources.tron_history(&me))
-        .await
-        .map_err(|_| "The history provider didn't answer within 30 seconds.".to_owned())?
-        .map_err(|e| format!("Couldn't load history: {e}"))?;
-    let entries = classify_tron(&me, &own, &state.config.usdt_trc20, &history.events);
-    Ok(summarize(
+    let timeout_msg = || "The history provider didn't answer within 30 seconds.".to_owned();
+    // Transfers (token movements) and the account's own transactions, both at once.
+    let (transfers, transactions) = futures_util::future::join(
+        tokio::time::timeout(ACTIVITY_TIME_LIMIT, sources.tron_history(&me)),
+        tokio::time::timeout(ACTIVITY_TIME_LIMIT, sources.tron_transactions(&me)),
+    )
+    .await;
+    let transfers = transfers
+        .map_err(|_| timeout_msg())?
+        .map_err(|e| format!("Couldn't load transfers: {e}"))?;
+    let transactions = transactions
+        .map_err(|_| timeout_msg())
+        .and_then(|r| r.map_err(|e| format!("Couldn't load transactions: {e}")));
+
+    let pinned = &state.config.usdt_trc20;
+    let txs: &[_] = transactions
+        .as_ref()
+        .map(|t| t.txs.as_slice())
+        .unwrap_or(&[]);
+    // One look-alike reference list built from both histories.
+    let known = known_counterparties(&me, &own, pinned, &transfers.events, txs);
+    let entries = classify_tron_with_known(&me, pinned, &transfers.events, &known);
+    let mut page = summarize(
         wallet.id.clone(),
         &me,
-        history.provider,
+        transfers.provider,
         entries,
-        history.unreadable,
-    ))
+        transfers.unreadable,
+    );
+    page.attach_transactions(transactions.map(|t| {
+        let entries = classify_tron_transactions(&me, pinned, &t.txs, &known);
+        transactions_view(t.provider, entries, t.unreadable)
+    }));
+    Ok(page)
 }
 
 #[tauri::command]

@@ -48,7 +48,13 @@ pub struct ProviderConfig {
 
 /// TronGrid's `/v1` TRC-20 transfer history (an indexer, not a plain node).
 pub const FEATURE_TRC20_HISTORY: &str = "trc20_history";
-const KNOWN_FEATURES: [(&str, ProviderKind); 1] = [(FEATURE_TRC20_HISTORY, ProviderKind::TronHttp)];
+/// TronGrid's `/v1` account transaction list (TRX transfers, contract calls,
+/// permission changes, staking…).
+pub const FEATURE_ACCOUNT_HISTORY: &str = "account_history";
+const KNOWN_FEATURES: [(&str, ProviderKind); 2] = [
+    (FEATURE_TRC20_HISTORY, ProviderKind::TronHttp),
+    (FEATURE_ACCOUNT_HISTORY, ProviderKind::TronHttp),
+];
 
 impl ProviderConfig {
     pub fn has_feature(&self, f: &str) -> bool {

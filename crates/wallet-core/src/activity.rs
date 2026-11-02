@@ -16,13 +16,15 @@
 
 use std::collections::BTreeSet;
 
-use chain_tron::history::{EventKind, Trc20Event};
+use chain_tron::history::{CallKind, EventKind, Trc20Event, TronTx, TxAction};
 use chain_tron::TronAddress;
 use serde::Serialize;
 use wallet_types::{format_base_units, Amount, Asset, WalletId};
 
 /// Transfers of genuine USDT below this (1 USDT) are treated as dust.
 pub const DUST_BASE_UNITS: u128 = 1_000_000;
+/// TRX transfers below this (1 TRX, in sun) are treated as dust.
+pub const DUST_SUN: u128 = 1_000_000;
 /// Characters compared at the start (after the network's fixed prefix) and at
 /// the end of two addresses for the look-alike check.
 pub const LOOKALIKE_CHARS: usize = 3;
@@ -56,8 +58,18 @@ pub enum Flag {
     FakeToken,
     /// Any other token that isn't the pinned USDT contract.
     UnknownToken,
-    /// This address gave someone permission to spend its USDT.
+    /// This address gave someone permission to spend its tokens.
     Approval,
+    /// Someone else moved tokens out of this address using an earlier approval.
+    SpentByOther,
+    /// The account's owner/active permissions were changed (§8.5).
+    PermissionChange,
+    /// A call to a contract that isn't the pinned USDT contract.
+    OtherContract { contract: String },
+    /// A TRC-10 token transfer (almost always spam).
+    Trc10,
+    /// The transaction failed on-chain.
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +102,10 @@ pub struct WalletActivity {
     pub lookalike_count: usize,
     pub unreadable: usize,
     pub notes: Vec<String>,
+    /// The account's own transactions (Tronscan's "Transactions" tab).
+    pub transactions: Option<TransactionsView>,
+    pub transactions_error: Option<String>,
+    pub permission_changes: usize,
 }
 
 /// True if `a` and `b` are different but share the first `LOOKALIKE_CHARS`
@@ -136,9 +152,24 @@ pub fn classify_tron(
     pinned_usdt: &TronAddress,
     events: &[Trc20Event],
 ) -> Vec<ActivityEntry> {
-    // Reference set for the look-alike check: your own addresses, plus the
-    // counterparties of real (genuine USDT, ≥ 1 USDT) transfers.
-    let mut known: Vec<(String, String)> = own
+    let known = known_counterparties(me, own, pinned_usdt, events, &[]);
+    classify_tron_with_known(me, pinned_usdt, events, &known)
+}
+
+/// A known address and how to describe it in a look-alike warning.
+pub type Known = (String, String);
+
+/// Reference set for the look-alike check: your own addresses, plus the
+/// counterparties of real transfers (genuine USDT >= 1 USDT, TRX >= 1 TRX, and
+/// USDT you sent by contract call) in either history list.
+pub fn known_counterparties(
+    me: &TronAddress,
+    own: &[KnownAddress],
+    pinned_usdt: &TronAddress,
+    events: &[Trc20Event],
+    txs: &[TronTx],
+) -> Vec<Known> {
+    let mut known: Vec<Known> = own
         .iter()
         .map(|k| {
             (
@@ -161,7 +192,52 @@ pub fn classify_tron(
             }
         }
     }
+    for tx in txs.iter().filter(|t| t.success) {
+        let other = match &tx.action {
+            TxAction::TrxTransfer {
+                from,
+                to,
+                amount_sun,
+            } if *amount_sun >= DUST_SUN => Some(if from == me { *to } else { *from }),
+            TxAction::ContractCall {
+                owner,
+                contract,
+                call:
+                    CallKind::Transfer {
+                        to,
+                        amount: Some(a),
+                    },
+                ..
+            } if owner == me && contract == pinned_usdt && *a >= DUST_BASE_UNITS => Some(*to),
+            _ => None,
+        };
+        if let Some(o) = other.filter(|o| o != me) {
+            let s = o.to_base58();
+            if seen.insert(s.clone()) {
+                known.push((s, "someone you transacted with".into()));
+            }
+        }
+    }
+    known
+}
 
+fn lookalike_flag(known: &[Known], cp: &str) -> Option<Flag> {
+    known
+        .iter()
+        .find(|(k, _)| looks_alike(k, cp, 1))
+        .map(|(addr, label)| Flag::LookAlike {
+            similar_to: addr.clone(),
+            similar_to_label: label.clone(),
+        })
+}
+
+/// Classify TRC-20 events against a precomputed look-alike reference set.
+pub fn classify_tron_with_known(
+    me: &TronAddress,
+    pinned_usdt: &TronAddress,
+    events: &[Trc20Event],
+    known: &[Known],
+) -> Vec<ActivityEntry> {
     events
         .iter()
         .map(|e| {
@@ -201,12 +277,7 @@ pub fn classify_tron(
                 }
             }
             if counterparty != *me {
-                if let Some((addr, label)) = known.iter().find(|(k, _)| looks_alike(k, &cp, 1)) {
-                    flags.push(Flag::LookAlike {
-                        similar_to: addr.clone(),
-                        similar_to_label: label.clone(),
-                    });
-                }
+                flags.extend(lookalike_flag(known, &cp));
             }
 
             let hidden = !genuine
@@ -234,6 +305,339 @@ pub fn classify_tron(
             }
         })
         .collect()
+}
+
+/// One entry of the account's own transactions (Tronscan's "Transactions").
+#[derive(Debug, Clone, Serialize)]
+pub struct TxEntry {
+    pub txid: String,
+    pub time_ms: u64,
+    pub success: bool,
+    /// What happened, in plain words ("TRX transfer", "USDT approval", …).
+    pub action: String,
+    pub direction: Direction,
+    pub amount: Option<String>,
+    pub asset_label: Option<String>,
+    pub counterparty: Option<String>,
+    pub flags: Vec<Flag>,
+    pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TransactionsView {
+    pub source: String,
+    pub entries: Vec<TxEntry>,
+    pub hidden_count: usize,
+    pub unreadable: usize,
+}
+
+fn usdt_amount(a: Option<u128>) -> Option<String> {
+    Some(match a {
+        Some(v) => Amount::new(Asset::UsdtTrc20, v).to_decimal_string(),
+        None => "unlimited".to_owned(),
+    })
+}
+
+fn trx_amount(sun: u128) -> String {
+    Amount::new(Asset::Trx, sun).to_decimal_string()
+}
+
+fn dir(from_me: bool, to_me: bool) -> Direction {
+    match (from_me, to_me) {
+        (true, true) => Direction::SelfTransfer,
+        (true, false) => Direction::Out,
+        (false, true) => Direction::In,
+        (false, false) => Direction::NotInvolved,
+    }
+}
+
+/// What a transaction did, before flags.
+struct Described {
+    action: String,
+    direction: Direction,
+    amount: Option<String>,
+    asset_label: Option<String>,
+    counterparty: Option<TronAddress>,
+}
+
+/// Classify the account's own transactions.
+///
+/// Rules: anything this address signed is shown; dust and 0-value transfers it
+/// received, TRC-10 spam and transactions it isn't part of are hidden;
+/// approvals, permission changes and tokens spent by someone else are shown
+/// prominently and never hidden.
+pub fn classify_tron_transactions(
+    me: &TronAddress,
+    pinned_usdt: &TronAddress,
+    txs: &[TronTx],
+    known: &[Known],
+) -> Vec<TxEntry> {
+    txs.iter()
+        .map(|tx| {
+            let mut flags = Vec::new();
+            let mut hidden = false;
+            let mut never_hide = false;
+            let d = match &tx.action {
+                TxAction::TrxTransfer {
+                    from,
+                    to,
+                    amount_sun,
+                } => {
+                    let direction = dir(from == me, to == me);
+                    if *amount_sun == 0 {
+                        flags.push(Flag::ZeroValue);
+                    } else if *amount_sun < DUST_SUN && direction == Direction::In {
+                        flags.push(Flag::Dust);
+                    }
+                    hidden = direction == Direction::NotInvolved
+                        || (direction == Direction::In && *amount_sun < DUST_SUN);
+                    Described {
+                        action: "TRX transfer".into(),
+                        direction,
+                        amount: Some(trx_amount(*amount_sun)),
+                        asset_label: Some(Asset::Trx.label().into()),
+                        counterparty: Some(if from == me { *to } else { *from }),
+                    }
+                }
+                TxAction::ContractCall {
+                    owner,
+                    contract,
+                    call,
+                    call_value_sun,
+                } => {
+                    let usdt = contract == pinned_usdt;
+                    let mine = owner == me;
+                    if !usdt {
+                        flags.push(Flag::OtherContract {
+                            contract: contract.to_base58(),
+                        });
+                    }
+                    let asset_label = Some(if usdt {
+                        Asset::UsdtTrc20.label().to_owned()
+                    } else {
+                        "Unknown token / contract".to_owned()
+                    });
+                    let mut d = match call {
+                        CallKind::Transfer { to, amount } => Described {
+                            action: if usdt {
+                                "USDT transfer"
+                            } else {
+                                "Token transfer"
+                            }
+                            .into(),
+                            direction: dir(mine, to == me),
+                            amount: if usdt { usdt_amount(*amount) } else { None },
+                            asset_label,
+                            counterparty: Some(*to),
+                        },
+                        CallKind::TransferFrom { from, to, amount } => {
+                            if from == me && !mine && usdt {
+                                if *amount == Some(0) {
+                                    flags.push(Flag::ZeroValue);
+                                    hidden = true;
+                                } else {
+                                    flags.push(Flag::SpentByOther);
+                                    never_hide = true;
+                                }
+                            }
+                            Described {
+                                action: if usdt {
+                                    "USDT transferFrom"
+                                } else {
+                                    "Token transferFrom"
+                                }
+                                .into(),
+                                direction: dir(from == me, to == me),
+                                amount: if usdt { usdt_amount(*amount) } else { None },
+                                asset_label,
+                                counterparty: Some(*to),
+                            }
+                        }
+                        CallKind::Approve { spender, amount } => {
+                            if mine {
+                                flags.push(Flag::Approval);
+                                never_hide = true;
+                            }
+                            Described {
+                                action: if usdt {
+                                    "USDT approval"
+                                } else {
+                                    "Token approval"
+                                }
+                                .into(),
+                                direction: if mine {
+                                    Direction::Out
+                                } else {
+                                    Direction::NotInvolved
+                                },
+                                amount: if usdt {
+                                    usdt_amount(*amount)
+                                } else {
+                                    Some(
+                                        amount.map_or_else(
+                                            || "unlimited".to_owned(),
+                                            |a| a.to_string(),
+                                        ),
+                                    )
+                                },
+                                asset_label,
+                                counterparty: Some(*spender),
+                            }
+                        }
+                        CallKind::Unknown { selector } => {
+                            if usdt {
+                                flags.push(Flag::OtherContract {
+                                    contract: format!("USDT function 0x{selector}"),
+                                });
+                            }
+                            Described {
+                                action: "Contract call".into(),
+                                direction: if mine {
+                                    Direction::Out
+                                } else {
+                                    Direction::NotInvolved
+                                },
+                                amount: (*call_value_sun > 0).then(|| trx_amount(*call_value_sun)),
+                                asset_label: (*call_value_sun > 0)
+                                    .then(|| Asset::Trx.label().into()),
+                                counterparty: Some(*contract),
+                            }
+                        }
+                    };
+                    if !mine && d.direction == Direction::NotInvolved {
+                        hidden = true;
+                    }
+                    if d.amount.is_none() && *call_value_sun > 0 {
+                        d.amount = Some(trx_amount(*call_value_sun));
+                    }
+                    d
+                }
+                TxAction::PermissionUpdate { owner } => {
+                    if owner == me {
+                        flags.push(Flag::PermissionChange);
+                        never_hide = true;
+                    } else {
+                        hidden = true;
+                    }
+                    Described {
+                        action: "Account permissions changed".into(),
+                        direction: if owner == me {
+                            Direction::Out
+                        } else {
+                            Direction::NotInvolved
+                        },
+                        amount: None,
+                        asset_label: None,
+                        counterparty: None,
+                    }
+                }
+                TxAction::Trc10Transfer { from, to, amount } => {
+                    flags.push(Flag::Trc10);
+                    hidden = true;
+                    Described {
+                        action: "TRC-10 token transfer".into(),
+                        direction: dir(from == me, to == me),
+                        amount: Some(amount.to_string()),
+                        asset_label: Some("TRC-10 token (not USDT)".into()),
+                        counterparty: Some(if from == me { *to } else { *from }),
+                    }
+                }
+                TxAction::Resource { owner, what } => {
+                    hidden = owner != me;
+                    Described {
+                        action: (*what).into(),
+                        direction: if owner == me {
+                            Direction::Out
+                        } else {
+                            Direction::NotInvolved
+                        },
+                        amount: None,
+                        asset_label: None,
+                        counterparty: None,
+                    }
+                }
+                TxAction::Other {
+                    owner,
+                    contract_type,
+                } => {
+                    let mine = owner.as_ref() == Some(me);
+                    hidden = !mine;
+                    Described {
+                        action: format!("Other: {contract_type}"),
+                        direction: if mine {
+                            Direction::Out
+                        } else {
+                            Direction::NotInvolved
+                        },
+                        amount: None,
+                        asset_label: None,
+                        counterparty: None,
+                    }
+                }
+            };
+            if !tx.success {
+                flags.push(Flag::Failed);
+            }
+            let cp = d.counterparty.filter(|c| c != me).map(|c| c.to_base58());
+            if let Some(c) = &cp {
+                flags.extend(lookalike_flag(known, c));
+            }
+            TxEntry {
+                txid: tx.txid.clone(),
+                time_ms: tx.timestamp_ms,
+                success: tx.success,
+                action: d.action,
+                direction: d.direction,
+                amount: d.amount,
+                asset_label: d.asset_label,
+                counterparty: cp,
+                flags,
+                hidden: hidden && !never_hide,
+            }
+        })
+        .collect()
+}
+
+pub fn transactions_view(
+    source: String,
+    entries: Vec<TxEntry>,
+    unreadable: usize,
+) -> TransactionsView {
+    let hidden_count = entries.iter().filter(|e| e.hidden).count();
+    TransactionsView {
+        source,
+        entries,
+        hidden_count,
+        unreadable,
+    }
+}
+
+impl WalletActivity {
+    /// Add the account's transactions (or why they couldn't be loaded) and
+    /// fold their warnings into the page-level counters.
+    pub fn attach_transactions(&mut self, result: Result<TransactionsView, String>) {
+        match result {
+            Ok(view) => {
+                let count = |pred: fn(&Flag) -> bool| {
+                    view.entries
+                        .iter()
+                        .filter(|e| e.flags.iter().any(pred))
+                        .count()
+                };
+                self.approval_count += count(|f| matches!(f, Flag::Approval | Flag::SpentByOther));
+                self.lookalike_count += count(|f| matches!(f, Flag::LookAlike { .. }));
+                self.permission_changes = count(|f| matches!(f, Flag::PermissionChange));
+                if view.unreadable > 0 {
+                    self.notes.push(format!(
+                        "{} transactions couldn't be read and were left out.",
+                        view.unreadable
+                    ));
+                }
+                self.transactions = Some(view);
+            }
+            Err(e) => self.transactions_error = Some(e),
+        }
+    }
 }
 
 pub fn summarize(
@@ -270,6 +674,9 @@ pub fn summarize(
         lookalike_count,
         unreadable,
         notes,
+        transactions: None,
+        transactions_error: None,
+        permission_changes: 0,
     }
 }
 
@@ -458,5 +865,155 @@ mod tests {
         );
         assert_eq!(out[0].amount.as_deref(), Some("2"));
         assert!(out[3].hidden);
+    }
+
+    fn tx(action: TxAction, success: bool) -> TronTx {
+        TronTx {
+            txid: "cd".repeat(32),
+            timestamp_ms: 1,
+            success,
+            action,
+        }
+    }
+
+    #[test]
+    fn transactions_rules() {
+        let me = addr(1, None);
+        let (friend, impostor) = lookalike_pair();
+        let spender = addr(4, None);
+        let other_contract = addr(5, None);
+        let txs = vec![
+            // 0: I sent 10 TRX to a friend (establishes the friend).
+            tx(
+                TxAction::TrxTransfer {
+                    from: me,
+                    to: friend,
+                    amount_sun: 10_000_000,
+                },
+                true,
+            ),
+            // 1: TRX dust from a look-alike: hidden and flagged.
+            tx(
+                TxAction::TrxTransfer {
+                    from: impostor,
+                    to: me,
+                    amount_sun: 1,
+                },
+                true,
+            ),
+            // 2: I approved a spender for unlimited USDT: never hidden.
+            tx(
+                TxAction::ContractCall {
+                    owner: me,
+                    contract: usdt(),
+                    call: CallKind::Approve {
+                        spender,
+                        amount: None,
+                    },
+                    call_value_sun: 0,
+                },
+                true,
+            ),
+            // 3: Permission change on my account: never hidden.
+            tx(TxAction::PermissionUpdate { owner: me }, true),
+            // 4: Someone else moved my USDT with transferFrom.
+            tx(
+                TxAction::ContractCall {
+                    owner: spender,
+                    contract: usdt(),
+                    call: CallKind::TransferFrom {
+                        from: me,
+                        to: spender,
+                        amount: Some(5_000_000),
+                    },
+                    call_value_sun: 0,
+                },
+                true,
+            ),
+            // 5: 0-value transferFrom poisoning: hidden.
+            tx(
+                TxAction::ContractCall {
+                    owner: impostor,
+                    contract: usdt(),
+                    call: CallKind::TransferFrom {
+                        from: me,
+                        to: impostor,
+                        amount: Some(0),
+                    },
+                    call_value_sun: 0,
+                },
+                true,
+            ),
+            // 6: I called some other contract.
+            tx(
+                TxAction::ContractCall {
+                    owner: me,
+                    contract: other_contract,
+                    call: CallKind::Unknown {
+                        selector: "12345678".into(),
+                    },
+                    call_value_sun: 0,
+                },
+                true,
+            ),
+            // 7: Staking: shown, no warning.
+            tx(
+                TxAction::Resource {
+                    owner: me,
+                    what: "Stake TRX (freeze)",
+                },
+                true,
+            ),
+            // 8: A failed TRX transfer I sent.
+            tx(
+                TxAction::TrxTransfer {
+                    from: me,
+                    to: friend,
+                    amount_sun: 2_000_000,
+                },
+                false,
+            ),
+            // 9: TRC-10 spam: hidden.
+            tx(
+                TxAction::Trc10Transfer {
+                    from: impostor,
+                    to: me,
+                    amount: 1,
+                },
+                true,
+            ),
+        ];
+        let known = known_counterparties(&me, &[], &usdt(), &[], &txs);
+        assert!(known.iter().any(|(a, _)| *a == friend.to_base58()));
+        let out = classify_tron_transactions(&me, &usdt(), &txs, &known);
+
+        assert!(!out[0].hidden && out[0].flags.is_empty(), "{:?}", out[0]);
+        assert_eq!(out[0].amount.as_deref(), Some("10"));
+        assert!(out[1].hidden && out[1].flags.contains(&Flag::Dust));
+        assert!(out[1]
+            .flags
+            .iter()
+            .any(|f| matches!(f, Flag::LookAlike { .. })));
+        assert!(!out[2].hidden && out[2].flags.contains(&Flag::Approval));
+        assert_eq!(out[2].amount.as_deref(), Some("unlimited"));
+        assert!(!out[3].hidden && out[3].flags.contains(&Flag::PermissionChange));
+        assert!(!out[4].hidden && out[4].flags.contains(&Flag::SpentByOther));
+        assert!(out[5].hidden && out[5].flags.contains(&Flag::ZeroValue));
+        assert!(
+            !out[6].hidden
+                && out[6]
+                    .flags
+                    .iter()
+                    .any(|f| matches!(f, Flag::OtherContract { .. }))
+        );
+        assert!(!out[7].hidden && out[7].flags.is_empty());
+        assert!(!out[8].hidden && out[8].flags.contains(&Flag::Failed));
+        assert!(out[9].hidden && out[9].flags.contains(&Flag::Trc10));
+
+        let mut page = summarize("w".parse().expect("id"), &me, "trongrid".into(), vec![], 0);
+        page.attach_transactions(Ok(transactions_view("trongrid".into(), out, 0)));
+        assert_eq!(page.approval_count, 2, "own approval + spent by other");
+        assert_eq!(page.permission_changes, 1);
+        assert!(page.lookalike_count >= 1);
     }
 }

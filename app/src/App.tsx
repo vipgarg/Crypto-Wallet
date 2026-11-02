@@ -10,6 +10,7 @@ import {
   type ActivityEntry,
   type Flag,
   type WalletActivity,
+  type TxEntry,
   type Tier,
   type WalletView,
 } from "./api";
@@ -413,7 +414,17 @@ function flagText(f: Flag): string {
     case "unknown_token":
       return "Not the official USDT contract";
     case "approval":
-      return "Token approval: this address may spend your USDT";
+      return "Token approval: another address may spend your tokens";
+    case "spent_by_other":
+      return "Someone else moved tokens out of this wallet (using an approval)";
+    case "permission_change":
+      return "Account permissions changed: check who controls this account";
+    case "other_contract":
+      return `Called a contract that isn't USDT: ${f.contract}`;
+    case "trc10":
+      return "TRC-10 token (spam)";
+    case "failed":
+      return "Transaction failed";
   }
 }
 
@@ -474,7 +485,56 @@ function EntryTable({ entries }: { entries: ActivityEntry[] }) {
   );
 }
 
+const SEVERE: Flag["kind"][] = ["approval", "spent_by_other", "permission_change", "look_alike"];
+
+function TxRow({ e }: { e: TxEntry }) {
+  const severe = e.flags.some((f) => SEVERE.includes(f.kind));
+  return (
+    <tr className={severe ? "row-warn" : ""}>
+      <td>{new Date(e.time_ms).toLocaleString()}</td>
+      <td>
+        <div>{e.action}</div>
+        <div className="asset-label">{DIRECTION_TEXT[e.direction]}</div>
+      </td>
+      <td>
+        <div className="amount-small">{e.amount ?? "—"}</div>
+        {e.asset_label && <div className="asset-label">{e.asset_label}</div>}
+      </td>
+      <td>{e.counterparty ? <Addr a={e.counterparty} /> : <span className="muted">—</span>}</td>
+      <td>
+        {e.flags.map((f, i) => (
+          <div key={i} className={`flag flag-${f.kind}`}>
+            {flagText(f)}
+          </div>
+        ))}
+      </td>
+    </tr>
+  );
+}
+
+function TxTable({ entries }: { entries: TxEntry[] }) {
+  return (
+    <table className="activity">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>What</th>
+          <th>Amount</th>
+          <th>Counterparty</th>
+          <th>Warnings</th>
+        </tr>
+      </thead>
+      <tbody>
+        {entries.map((e, i) => (
+          <TxRow key={`${e.txid}-${i}`} e={e} />
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function ActivityPage() {
+  const [tab, setTab] = useState<"transfers" | "transactions">("transfers");
   const [wallets, setWallets] = useState<WalletView[]>([]);
   const [selected, setSelected] = useState("");
   const [data, setData] = useState<WalletActivity | null>(null);
@@ -508,6 +568,8 @@ function ActivityPage() {
 
   const visible = data?.entries.filter((e) => !e.hidden) ?? [];
   const hidden = data?.entries.filter((e) => e.hidden) ?? [];
+  const txVisible = data?.transactions?.entries.filter((e) => !e.hidden) ?? [];
+  const txHidden = data?.transactions?.entries.filter((e) => e.hidden) ?? [];
 
   return (
     <section>
@@ -516,7 +578,10 @@ function ActivityPage() {
         Never copy a recipient address from transaction history. Scammers send tiny or 0-value transfers from
         addresses that look like ones you use. Always take addresses from your verified address book.
       </p>
-      <p className="hint">Last 50 USDT (TRC-20) transfers per TRON wallet. Ethereum and Bitcoin history come next.</p>
+      <p className="hint">
+        Latest 50 USDT transfers and latest 50 transactions per TRON wallet, like Tronscan's two tabs. Ethereum and
+        Bitcoin history come next.
+      </p>
       {wallets.length === 0 && !error && <p>No wallet with a TRON address yet.</p>}
       {wallets.length > 0 && (
         <div className="toolbar">
@@ -535,10 +600,16 @@ function ActivityPage() {
       {error && <p className="error">{error}</p>}
       {data && (
         <>
+          {data.permission_changes > 0 && (
+            <p className="error">
+              ⚠ {data.permission_changes} account permission change(s) found. On TRON this is how attackers take over
+              an account. If you didn't do this, treat the wallet as compromised and follow the incident runbook.
+            </p>
+          )}
           {data.approval_count > 0 && (
             <p className="error">
-              ⚠ {data.approval_count} token approval(s) found: another address may be able to move this wallet's USDT.
-              If you didn't do this, follow the incident runbook (revoke from a clean device).
+              ⚠ {data.approval_count} token approval(s) or approved spend(s) found: another address may be able to move
+              this wallet's tokens. If you didn't do this, follow the incident runbook (revoke from a clean device).
             </p>
           )}
           {data.lookalike_count > 0 && (
@@ -552,18 +623,59 @@ function ActivityPage() {
               {n}
             </p>
           ))}
-          <div className="card">
-            <h3>
-              Transfers <span className="muted">· {visible.length} shown</span>
-            </h3>
-            {visible.length === 0 ? <p className="muted">No regular USDT transfers in the latest entries.</p> : <EntryTable entries={visible} />}
+          <div className="tabs">
+            <button className={tab === "transfers" ? "active" : ""} onClick={() => setTab("transfers")}>
+              Transfers (USDT) · {visible.length}
+            </button>
+            <button className={tab === "transactions" ? "active" : ""} onClick={() => setTab("transactions")}>
+              Transactions (all) · {txVisible.length}
+            </button>
           </div>
-          {hidden.length > 0 && (
-            <details className="card">
-              <summary>Hidden: {hidden.length} suspicious, dust or unknown-token transfers</summary>
-              <p className="error">These are hidden on purpose. Do not copy any address from this list.</p>
-              <EntryTable entries={hidden} />
-            </details>
+          {tab === "transfers" && (
+            <>
+              <div className="card">
+                <p className="hint">Token movements of genuine USDT (TRC-20) to or from this wallet.</p>
+                {visible.length === 0 ? (
+                  <p className="muted">No regular USDT transfers in the latest entries.</p>
+                ) : (
+                  <EntryTable entries={visible} />
+                )}
+              </div>
+              {hidden.length > 0 && (
+                <details className="card">
+                  <summary>Hidden: {hidden.length} suspicious, dust or unknown-token transfers</summary>
+                  <p className="error">These are hidden on purpose. Do not copy any address from this list.</p>
+                  <EntryTable entries={hidden} />
+                </details>
+              )}
+            </>
+          )}
+          {tab === "transactions" && (
+            <>
+              {data.transactions_error && <p className="error">{data.transactions_error}</p>}
+              {data.transactions && (
+                <>
+                  <div className="card">
+                    <p className="hint">
+                      Everything this account did on-chain: TRX transfers, contract calls (USDT transfers and approvals),
+                      permission changes, staking and voting. Source: {data.transactions.source}.
+                    </p>
+                    {txVisible.length === 0 ? (
+                      <p className="muted">No transactions in the latest entries.</p>
+                    ) : (
+                      <TxTable entries={txVisible} />
+                    )}
+                  </div>
+                  {txHidden.length > 0 && (
+                    <details className="card">
+                      <summary>Hidden: {txHidden.length} dust, spam or unrelated transactions</summary>
+                      <p className="error">These are hidden on purpose. Do not copy any address from this list.</p>
+                      <TxTable entries={txHidden} />
+                    </details>
+                  )}
+                </>
+              )}
+            </>
           )}
         </>
       )}

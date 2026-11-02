@@ -3,7 +3,7 @@
 use chain_btc::esplora::{self, AddressStats};
 use chain_btc::BtcAddress;
 use chain_eth::{rpc, EthAddress};
-use chain_tron::history::{self, Trc20Event};
+use chain_tron::history::{self, Trc20Event, TronTx};
 use chain_tron::{api, TronAddress};
 use std::collections::HashMap;
 use std::future::Future;
@@ -15,7 +15,9 @@ use serde::Serialize;
 use thiserror::Error;
 use wallet_types::Network;
 
-use crate::config::{NetworkConfig, ProviderConfig, ProviderKind, FEATURE_TRC20_HISTORY};
+use crate::config::{
+    NetworkConfig, ProviderConfig, ProviderKind, FEATURE_ACCOUNT_HISTORY, FEATURE_TRC20_HISTORY,
+};
 use crate::cross_check::{cross_check, CrossChecked};
 use crate::http::{HttpClient, HttpError};
 
@@ -101,6 +103,26 @@ pub async fn trc20_history<H: HttpClient>(
     let body = http.get_text(&url).await?;
     let json: serde_json::Value = serde_json::from_str(&body).map_err(parse_err)?;
     history::parse_trc20_history(&json).map_err(parse_err)
+}
+
+/// The account's own transactions (Tronscan's "Transactions" tab).
+pub async fn tron_transactions_from<H: HttpClient>(
+    http: &H,
+    p: &ProviderConfig,
+    addr: &TronAddress,
+) -> Result<(Vec<TronTx>, usize), FetchError> {
+    let url = format!("{}{}", p.base_url, history::transactions_path(addr));
+    let body = http.get_text(&url).await?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(parse_err)?;
+    history::parse_transactions(&json).map_err(parse_err)
+}
+
+/// Account transactions fetched from one provider.
+#[derive(Debug, Clone)]
+pub struct TronTransactions {
+    pub provider: String,
+    pub txs: Vec<TronTx>,
+    pub unreadable: usize,
 }
 
 /// History fetched from one provider (history isn't cross-checked yet).
@@ -375,6 +397,32 @@ impl<'a, H: HttpClient> Sources<'a, H> {
         }
         if errors.is_empty() {
             errors.push("no configured provider offers TRON history".into());
+        }
+        Err(errors.join("; "))
+    }
+
+    /// Account transactions from the first provider that offers them.
+    pub async fn tron_transactions(&self, addr: &TronAddress) -> Result<TronTransactions, String> {
+        let mut errors = Vec::new();
+        for p in self
+            .config
+            .providers_for(Network::Tron)
+            .filter(|p| p.has_feature(FEATURE_ACCOUNT_HISTORY))
+        {
+            self.pacer.wait(p).await;
+            match tron_transactions_from(self.http, p, addr).await {
+                Ok((txs, unreadable)) => {
+                    return Ok(TronTransactions {
+                        provider: p.id.clone(),
+                        txs,
+                        unreadable,
+                    })
+                }
+                Err(e) => errors.push(format!("{}: {e}", p.id)),
+            }
+        }
+        if errors.is_empty() {
+            errors.push("no configured provider offers TRON account history".into());
         }
         Err(errors.join("; "))
     }

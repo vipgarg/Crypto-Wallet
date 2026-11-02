@@ -103,7 +103,32 @@ export type Flag =
   | { kind: "look_alike"; similar_to: string; similar_to_label: string }
   | { kind: "fake_token" }
   | { kind: "unknown_token" }
-  | { kind: "approval" };
+  | { kind: "approval" }
+  | { kind: "spent_by_other" }
+  | { kind: "permission_change" }
+  | { kind: "other_contract"; contract: string }
+  | { kind: "trc10" }
+  | { kind: "failed" };
+
+export interface TxEntry {
+  txid: string;
+  time_ms: number;
+  success: boolean;
+  action: string;
+  direction: Direction;
+  amount: string | null;
+  asset_label: string | null;
+  counterparty: string | null;
+  flags: Flag[];
+  hidden: boolean;
+}
+
+export interface TransactionsView {
+  source: string;
+  entries: TxEntry[];
+  hidden_count: number;
+  unreadable: number;
+}
 
 export interface ActivityEntry {
   txid: string;
@@ -128,6 +153,9 @@ export interface WalletActivity {
   lookalike_count: number;
   unreadable: number;
   notes: string[];
+  transactions: TransactionsView | null;
+  transactions_error: string | null;
+  permission_changes: number;
 }
 
 export const api = {

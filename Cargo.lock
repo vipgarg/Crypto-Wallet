@@ -4412,6 +4412,7 @@ version = "0.1.0"
 dependencies = [
  "chain-btc",
  "data-sources",
+ "futures-util",
  "serde",
  "serde_json",
  "tauri",
