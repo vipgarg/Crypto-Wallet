@@ -1,0 +1,90 @@
+name: Android signer (testnet)
+
+# Builds the offline signer APK for the OnePlus tablet (docs/signer-app.md).
+# Each run starts from a clean GitHub runner. The APK and its SHA-256 are
+# uploaded as a build artifact; check the hash before installing.
+
+on:
+  push:
+    paths:
+      - "android/**"
+      - "crates/**"
+      - "tools/uniffi-bindgen/**"
+      - "Cargo.lock"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_NDK_VERSION: "4.1.2"
+      GRADLE_VERSION: "8.14.3"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Rust toolchain (pinned by rust-toolchain.toml) + Android target
+        run: |
+          rustup show
+          rustup target add aarch64-linux-android
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+
+      - name: Rust core for the tablet (arm64-v8a, Android 10+)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          cargo ndk -t arm64-v8a --platform 29 -o android/app/src/main/jniLibs \
+            build -p signer-ffi --release --locked
+          ls -l android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: Kotlin bindings (UniFFI)
+        run: |
+          cargo build -p signer-ffi --release --locked
+          cd tools/uniffi-bindgen
+          cargo run --release --locked -- generate \
+            --library ../../target/release/libsigner_ffi.so \
+            --language kotlin --no-format \
+            --out-dir ../../android/app/src/main/java
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Build APK
+        working-directory: android
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Guard - the APK must not request internet access
+        run: |
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          AAPT2="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)/aapt2"
+          "$AAPT2" dump permissions "$APK" | tee permissions.txt
+          if grep -q "android.permission.INTERNET" permissions.txt; then
+            echo "::error::The signer APK requests INTERNET permission"
+            exit 1
+          fi
+
+      - name: Name and hash the APK
+        run: |
+          mkdir -p out
+          NAME="wallet-signer-testnet-${GITHUB_SHA::7}.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "out/$NAME"
+          (cd out && sha256sum "$NAME" | tee "$NAME.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wallet-signer-testnet-${{ github.sha }}
+          path: out/
+          if-no-files-found: error

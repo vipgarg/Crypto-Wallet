@@ -5,3 +5,9 @@ node_modules/
 .DS_Store
 /app/src-tauri/gen
 /tools/uniffi-bindgen/target
+/android/.gradle
+/android/build
+/android/app/build
+/android/app/src/main/jniLibs
+/android/app/src/main/java/uniffi
+/android/local.properties

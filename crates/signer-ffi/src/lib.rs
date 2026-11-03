@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 uniffi::setup_scaffolding!();
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
+#[uniffi(flat_error)]
 pub enum SignerError {
     #[error("{msg}")]
     Dice { msg: String },
@@ -231,6 +232,30 @@ pub fn export_string(
     export::encode(&e).map_err(|e| SignerError::Export { msg: e.to_string() })
 }
 
+/// A QR code as a square matrix (`size` × `size`, row by row), drawn by the
+/// app. Uses the same QR library as the PC app.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct QrRecord {
+    pub size: u32,
+    pub modules: Vec<bool>,
+}
+
+#[uniffi::export]
+pub fn qr_code(text: String) -> Result<QrRecord, SignerError> {
+    let code = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::M)
+        .map_err(|_| SignerError::Input {
+            msg: "too much data for a QR code".into(),
+        })?;
+    Ok(QrRecord {
+        size: u32::try_from(code.width()).unwrap_or(0),
+        modules: code
+            .to_colors()
+            .into_iter()
+            .map(|c| c == qrcode::Color::Dark)
+            .collect(),
+    })
+}
+
 /// Bitcoin receive address #index (for "verify on signer").
 #[uniffi::export]
 pub fn btc_receive_address(public: WalletPublicRecord, index: u32) -> Result<String, SignerError> {
@@ -262,6 +287,8 @@ mod tests {
         assert!(btc_receive_address(public, 0)
             .expect("addr")
             .starts_with("bc1q"));
+        let qr = qr_code(exp).expect("qr");
+        assert_eq!(qr.modules.len(), (qr.size * qr.size) as usize);
         let restored = restore_seed(s.words().expect("w").join(" ")).expect("restore");
         assert_eq!(
             restored.derive_public(String::new()).expect("p").eth,

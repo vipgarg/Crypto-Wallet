@@ -40,6 +40,25 @@ Design references: ARCHITECTURE-MOBILE.md §2, §4, §5.1a; ARCHITECTURE.md §6,
 
 **Also needed on the PC side:** "Add wallet from signer": scan the export QR with the PC webcam (or paste the export text), validated by the same rules as `export::decode`.
 
+## First Android build (testnet) — what's in it
+
+Built by `.github/workflows/android.yml` (decision: Option A, GitHub Actions).
+
+- Screens: safety checks → wallet list → create (dice, 24 words, word check, passphrase, vault password) / restore from words → wallet detail → export QR for the PC, verify Bitcoin/Ethereum/TRON address (QR + text with bold ends).
+- Guard in CI: the build fails if the APK requests `INTERNET` permission.
+- **Known limits of this first build (to fix before real funds):**
+  - Debug-signed: GitHub's runner creates a new debug key each run, so installing a newer build means **uninstalling the old one, which deletes the test wallets** on the tablet (restore them from their words). A fixed release signing key comes later.
+  - Passwords, passphrases and words typed in the app pass through Kotlin strings, which the JVM can't wipe from memory (the Rust side wipes its copies).
+  - The system keyboard is used (with suggestions off); the in-app keyboard is still to do.
+  - Not yet checked at start-up: verified-boot state (key attestation) and screen recording.
+
+## Installing a test build on the tablet
+
+1. On GitHub: **Actions → "Android signer (testnet)" → latest green run → Artifacts**, download `wallet-signer-testnet-<commit>`. It contains the APK and a `.sha256` file.
+2. On the PC, check the hash (PowerShell): `Get-FileHash .\wallet-signer-testnet-XXXXXXX.apk -Algorithm SHA256`, and compare with the `.sha256` file and the value shown in the GitHub run log.
+3. On the tablet (still before any real seed exists): enable Developer options → USB debugging, connect the cable, run `adb install wallet-signer-testnet-XXXXXXX.apk` from the PC.
+4. Turn USB debugging and Developer options **off**, unplug, keep airplane mode on. The app's safety checks won't let you continue otherwise.
+
 ## How the APK gets built
 
 This development environment can't download Google's Android SDK, so the APK must be built elsewhere:
