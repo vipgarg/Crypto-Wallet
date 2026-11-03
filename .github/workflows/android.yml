@@ -42,9 +42,9 @@ jobs:
         run: cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
 
       - name: Rust core for the tablet (arm64-v8a, Android 10+)
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        # cargo-ndk finds the runner's NDK through ANDROID_NDK_ROOT.
         run: |
+          echo "NDK: $ANDROID_NDK_ROOT"
           cargo ndk -t arm64-v8a --platform 29 -o android/app/src/main/jniLibs \
             build -p signer-ffi --release --locked
           ls -l android/app/src/main/jniLibs/arm64-v8a/
@@ -69,7 +69,8 @@ jobs:
       - name: Guard - the APK must not request internet access
         run: |
           APK=android/app/build/outputs/apk/debug/app-debug.apk
-          AAPT2="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)/aapt2"
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          AAPT2="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)/aapt2"
           "$AAPT2" dump permissions "$APK" | tee permissions.txt
           if grep -q "android.permission.INTERNET" permissions.txt; then
             echo "::error::The signer APK requests INTERNET permission"
