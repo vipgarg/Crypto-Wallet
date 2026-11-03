@@ -53,6 +53,14 @@ Built by `.github/workflows/android.yml` (decision: Option A, GitHub Actions).
   - The system keyboard is used (with suggestions off); the in-app keyboard is still to do.
   - Not yet checked at start-up: verified-boot state (key attestation) and screen recording.
 
+## Test network screens (Phase 2)
+
+Wallet → **Test network (signet)** (Spending/Savings wallets): unlock with the vault password (and passphrase), then:
+- **Show test export QR**: the `m/84'/1'/0'` test key for the PC's Test send page.
+- **Sign a test payment**: the camera reads the PC's payment QR (CameraX + ZXing, offline). The tablet shows network, recipient (grouped, bold ends), amount, fee, change and the transaction ID start, all worked out on the tablet. You type the recipient's **last 6 characters from your paper**; then it signs and shows the signed QR for the PC.
+- The wallet locks again (key material wiped) when you leave the screen.
+- Permissions: **CAMERA** is added (QR reading only). The build fails if the APK requests INTERNET or any permission not on the reviewed list.
+
 ## Installing a test build on the tablet
 
 1. On GitHub: **Actions → "Android signer (testnet)" → latest green run → Artifacts**, download `wallet-signer-testnet-<commit>`. It contains the APK and a `.sha256` file.

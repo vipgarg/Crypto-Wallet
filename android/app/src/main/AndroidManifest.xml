@@ -3,11 +3,14 @@
   Offline signer (docs/signer-app.md, ARCHITECTURE-MOBILE.md §5.1).
   NO android.permission.INTERNET: Android then blocks every network
   connection from this app. ACCESS_NETWORK_STATE only lets the start-up
-  check see whether the tablet is connected to anything.
+  check see whether the tablet is connected to anything. CAMERA is used only
+  on the "scan a QR code" screens to read QR codes from the PC screen.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
         android:allowBackup="false"

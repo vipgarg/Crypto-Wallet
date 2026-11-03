@@ -42,6 +42,12 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.3")
+    // Camera QR reading, offline only (no network code is used).
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("com.google.zxing:core:3.5.3")
     // Used by the UniFFI-generated Kotlin bindings to call the Rust core.
     implementation("net.java.dev.jna:jna:5.15.0@aar")
 }

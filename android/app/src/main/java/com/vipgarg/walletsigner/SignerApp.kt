@@ -61,9 +61,9 @@ import uniffi.signer_ffi.newSeed
 import uniffi.signer_ffi.qrCode
 import uniffi.signer_ffi.restoreSeed
 
-private val BAD = Color(0xFFB3261E)
-private val OK = Color(0xFF1D6B3A)
-private val WARN = Color(0xFF7A5600)
+internal val BAD = Color(0xFFB3261E)
+internal val OK = Color(0xFF1D6B3A)
+internal val WARN = Color(0xFF7A5600)
 
 private sealed interface Screen {
     data object Checks : Screen
@@ -71,6 +71,7 @@ private sealed interface Screen {
     data class Create(val restore: Boolean) : Screen
     data class Detail(val entry: WalletEntry) : Screen
     data class ShowQr(val title: String, val text: String, val note: String) : Screen
+    data class TestNet(val entry: WalletEntry) : Screen
 }
 
 @Composable
@@ -103,6 +104,12 @@ fun SignerApp(store: WalletStore) {
                         entry = s.entry,
                         onBack = { screen = Screen.Home },
                         onShowQr = { title, text, note -> screen = Screen.ShowQr(title, text, note) },
+                        onTestNet = { screen = Screen.TestNet(s.entry) },
+                    )
+                    is Screen.TestNet -> TestNetScreen(
+                        entry = s.entry,
+                        store = store,
+                        onBack = { screen = Screen.Detail(s.entry) },
                     )
                     is Screen.ShowQr -> QrScreen(s.title, s.text, s.note, onBack = { screen = Screen.Home })
                 }
@@ -112,12 +119,12 @@ fun SignerApp(store: WalletStore) {
 }
 
 @Composable
-private fun Title(text: String) {
+internal fun Title(text: String) {
     Text(text, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
 }
 
 @Composable
-private fun Hint(text: String, color: Color = Color.Unspecified) {
+internal fun Hint(text: String, color: Color = Color.Unspecified) {
     Text(text, fontSize = 14.sp, color = color)
 }
 
@@ -465,7 +472,7 @@ private fun CreateWallet(
 }
 
 @Composable
-private fun SecretField(value: String, onChange: (String) -> Unit, label: String) {
+internal fun SecretField(value: String, onChange: (String) -> Unit, label: String) {
     OutlinedTextField(
         value,
         onChange,
@@ -486,6 +493,7 @@ private fun DetailScreen(
     entry: WalletEntry,
     onBack: () -> Unit,
     onShowQr: (String, String, String) -> Unit,
+    onTestNet: () -> Unit,
 ) {
     var btcIndex by remember { mutableStateOf("0") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -536,49 +544,69 @@ private fun DetailScreen(
         }
     }
     HorizontalDivider()
+    Text("Test network (Bitcoin signet)", fontWeight = FontWeight.SemiBold)
+    if (entry.stateless) {
+        Hint("Not available for Vault-tier wallets (their seed isn't stored here). Use a Spending test wallet.")
+    } else {
+        Hint("Practise signing with test coins that have no value: export the test wallet to the PC, then sign test payments.")
+        OutlinedButton(onClick = onTestNet) { Text("Test network (signet)") }
+    }
+    HorizontalDivider()
     OutlinedButton(onClick = onBack) { Text("Back to wallets") }
 }
 
+/** A QR code drawn on a white square; larger codes get a larger square. */
 @Composable
-private fun QrScreen(title: String, text: String, note: String, onBack: () -> Unit) {
+internal fun QrImage(text: String) {
     val qr = remember(text) { runCatching { qrCode(text) }.getOrNull() }
-    Title(title)
-    Hint(note)
-    if (qr != null) {
-        val n = qr.size.toInt()
-        Canvas(modifier = Modifier.size(300.dp)) {
-            val quiet = 4
-            val cell = size.width / (n + quiet * 2)
-            drawRect(Color.White, size = size)
-            for (y in 0 until n) {
-                for (x in 0 until n) {
-                    if (qr.modules[y * n + x]) {
-                        drawRect(
-                            Color.Black,
-                            topLeft = Offset((x + quiet) * cell, (y + quiet) * cell),
-                            size = Size(cell, cell),
-                        )
-                    }
+    if (qr == null) {
+        Hint("This is too large for one QR code.", BAD)
+        return
+    }
+    val n = qr.size.toInt()
+    val side = if (n > 45) 520.dp else 300.dp
+    Canvas(modifier = Modifier.size(side)) {
+        val quiet = 4
+        val cell = size.width / (n + quiet * 2)
+        drawRect(Color.White, size = size)
+        for (y in 0 until n) {
+            for (x in 0 until n) {
+                if (qr.modules[y * n + x]) {
+                    drawRect(
+                        Color.Black,
+                        topLeft = Offset((x + quiet) * cell, (y + quiet) * cell),
+                        size = Size(cell, cell),
+                    )
                 }
             }
         }
     }
-    if (text.length <= 64) {
-        // Address in groups of 4, with the first and last 6 characters in bold.
-        Text(
-            buildAnnotatedString {
-                text.forEachIndexed { i, c ->
-                    if (i > 0 && i % 4 == 0) append(' ')
-                    if (i < 6 || i >= text.length - 6) {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(c) }
-                    } else {
-                        append(c)
-                    }
+}
+
+/** Address in groups of 4, with the first and last 6 characters in bold. */
+@Composable
+internal fun GroupedAddress(text: String) {
+    Text(
+        buildAnnotatedString {
+            text.forEachIndexed { i, c ->
+                if (i > 0 && i % 4 == 0) append(' ')
+                if (i < 6 || i >= text.length - 6) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(c) }
+                } else {
+                    append(c)
                 }
-            },
-            fontFamily = FontFamily.Monospace,
-            fontSize = 19.sp,
-        )
-    }
+            }
+        },
+        fontFamily = FontFamily.Monospace,
+        fontSize = 19.sp,
+    )
+}
+
+@Composable
+private fun QrScreen(title: String, text: String, note: String, onBack: () -> Unit) {
+    Title(title)
+    Hint(note)
+    QrImage(text)
+    if (text.length <= 64) GroupedAddress(text)
     OutlinedButton(onClick = onBack) { Text("Done") }
 }

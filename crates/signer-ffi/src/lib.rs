@@ -313,7 +313,12 @@ impl UnlockedWallet {
                 msg: "the last 6 characters you typed don't match the recipient address. Check your paper address book".into(),
             });
         }
-        let (signed, _) = btc_sign::sign(psbt, &master).map_err(sign_err)?;
+        let (mut signed, _) = btc_sign::sign(psbt, &master).map_err(sign_err)?;
+        // The PC keeps its own copy and takes only the signatures, so the
+        // previous transactions needn't go back: a much smaller QR code.
+        for i in &mut signed.inputs {
+            i.non_witness_utxo = None;
+        }
         export::psbt_to_qr(&signed.serialize())
             .map_err(|e| SignerError::Export { msg: e.to_string() })
     }

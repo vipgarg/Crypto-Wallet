@@ -66,7 +66,7 @@ jobs:
         working-directory: android
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Guard - the APK must not request internet access
+      - name: Guard - only the reviewed permissions, never internet
         run: |
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
@@ -74,6 +74,15 @@ jobs:
           "$AAPT2" dump permissions "$APK" | tee permissions.txt
           if grep -q "android.permission.INTERNET" permissions.txt; then
             echo "::error::The signer APK requests INTERNET permission"
+            exit 1
+          fi
+          # Exactly these may be requested (a library adding any other
+          # permission fails the build until it is reviewed).
+          ALLOWED='^(android\.permission\.ACCESS_NETWORK_STATE|android\.permission\.CAMERA|com\.vipgarg\.walletsigner\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION)$'
+          grep "^uses-permission:" permissions.txt | sed -E "s/.*name='([^']+)'.*/\1/" | sort -u > requested.txt
+          cat requested.txt
+          if grep -Ev "$ALLOWED" requested.txt; then
+            echo "::error::The signer APK requests a permission that isn't on the reviewed list (above)"
             exit 1
           fi
 
