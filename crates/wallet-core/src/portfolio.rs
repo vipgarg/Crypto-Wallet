@@ -655,6 +655,37 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn one_slow_bitcoin_source_still_verifies() {
+        // Every Bitcoin provider except the first answers: the other two
+        // agree, so Bitcoin stays "verified" (the reason for the third source).
+        let config = NetworkConfig::embedded().expect("config");
+        let acct: AccountXpub = ZPUB.parse().expect("zpub");
+        let mut http = MockHttp::default();
+        for p in config.providers_for(Network::Bitcoin).skip(1) {
+            for chain in [Chain::Receive, Chain::Change] {
+                for i in 0..GAP_LIMIT + 2 * BTC_BATCH {
+                    let a = acct.derive_address(chain, i).expect("derive");
+                    let body = if (chain, i) == (Chain::Receive, 0) {
+                        esplora(150_000, 2)
+                    } else {
+                        esplora(0, 0)
+                    };
+                    http.on_get(&format!("{}/address/{}", p.base_url, a), &body);
+                }
+            }
+        }
+        let p = build_portfolio(&http, &config, &registry(), &NoProgress).await;
+        let btc = p.wallets[0]
+            .balances
+            .iter()
+            .find(|x| x.asset == Asset::Btc)
+            .expect("btc");
+        assert_eq!(btc.status, BalanceStatus::Verified, "{:?}", btc.problems);
+        assert_eq!(btc.display.as_deref(), Some("0.0015"));
+        assert_eq!(btc.sources.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn outage_stops_btc_scan() {
         let config = NetworkConfig::embedded().expect("config");
         let reg = registry();
@@ -673,9 +704,14 @@ mod tests {
             .iter()
             .filter(|r| r.contains("/address/"))
             .count();
-        assert!(btc_requests <= (BTC_BATCH * 2) as usize, "{btc_requests}");
+        let providers = config.providers_for(Network::Bitcoin).count() as u32;
+        assert!(providers >= 3, "a third Bitcoin source is configured");
         assert!(
-            btc_requests <= (data_sources::fetch::BREAKER_THRESHOLD * 2) as usize,
+            btc_requests <= (BTC_BATCH * providers) as usize,
+            "{btc_requests}"
+        );
+        assert!(
+            btc_requests <= (data_sources::fetch::BREAKER_THRESHOLD * providers) as usize,
             "{btc_requests}"
         );
     }

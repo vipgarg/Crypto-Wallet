@@ -42,6 +42,17 @@ base_url = "https://blockstream.info/api"
 operator = "Blockstream"
 
 [[providers]]
+# Third Bitcoin source, so one slow or rate-limited provider no longer leaves
+# Bitcoin "unverified": the other two must still agree exactly. A public
+# mempool instance run independently of mempool.space (same open-source
+# software, different operator and servers).
+id = "emzy-mempool"
+network = "bitcoin"
+kind = "esplora"
+base_url = "https://mempool.emzy.de/api"
+operator = "Emzy (independent mempool instance)"
+
+[[providers]]
 id = "publicnode-eth"
 network = "ethereum"
 kind = "eth_json_rpc"
