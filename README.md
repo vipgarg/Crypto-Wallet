@@ -19,11 +19,12 @@ A personal self-custody wallet, built in phases. This repository currently conta
 | Receive | QR code and address (even groups of 4, first and last 6 characters in bold) with a clear network banner. Bitcoin gives a fresh, never-used address each time (checked with both providers; fails closed if they can't confirm), with a "New address" button. Copy clears the clipboard after 60 s. A "verify on the signer" step explains what to compare on the tablet. |
 | Login | First run: choose a password and link an authenticator app (QR code). Every start: password + 6-digit code. The wallet list is encrypted on disk (Argon2id + XChaCha20-Poly1305). Increasing delays on wrong attempts, 30-minute lock after 5. Auto-lock after 5 minutes idle, and a Lock button. |
 | PC safety checks | Shown on the login screen and the Checks page: Windows Defender, Windows updates, admin account, remote-access tools / Remote Desktop, proxy, PC clock vs blockchain time, app file fingerprint, config hash. They catch mistakes and simple malware; admin-level malware can fake them. |
-| Security boundary | Tauri 2 with a strict Content-Security-Policy, the isolation pattern, a capability file allowing exactly the 16 reviewed commands, navigation locked to the app, no plugins (no shell/fs/http/updater). |
+| Audit log | **Log** page: every login (and failed attempt), lock, wallet added or removed, and PC check problem, newest first. Each entry is hash-linked to the one before, and the whole log is checked at every start (result also on the Checks page). Catches accidental damage and edits to old entries; not tamper-proof against someone controlling the PC, so write the shown *head* on paper now and then. Not encrypted (failed logins are logged before login), so it never contains addresses, labels or amounts. |
+| Security boundary | Tauri 2 with a strict Content-Security-Policy, the isolation pattern, a capability file allowing exactly the 17 reviewed commands, navigation locked to the app, no plugins (no shell/fs/http/updater). |
 
 **Also built:** TRON activity (transfers and transactions) with address-poisoning detection.
 
-**Not built yet:** Ethereum and Bitcoin activity, audit log and policy checkpoints.
+**Not built yet:** Ethereum and Bitcoin activity, policy checkpoints to an external monitor.
 
 ## Repository layout
 
@@ -36,6 +37,7 @@ crates/
   data-sources/   compiled-in network config, HTTPS client, cross-checking (no majority vote)
   wallet-core/    watch-only wallet registry (atomic saves) and the portfolio
   watch-export/   the tablet's watch-only export format (shared; no seed code)
+  audit-log/      append-only, hash-chained audit log
 app/
   src/            React + TypeScript UI
   isolation/      Tauri isolation script (second command allowlist)

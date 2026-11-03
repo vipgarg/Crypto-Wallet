@@ -68,6 +68,37 @@ export interface SignerWalletPreview {
   problem: string | null;
 }
 
+export type AuditEvent =
+  | "app_started"
+  | "chain_broken"
+  | "setup_completed"
+  | "login_succeeded"
+  | "login_failed"
+  | "login_blocked"
+  | "locked"
+  | "idle_locked"
+  | "wallet_added"
+  | "wallet_removed"
+  | "checks_problem";
+
+export interface AuditEntry {
+  seq: number;
+  /** PC clock, Unix seconds. */
+  at: number;
+  event: AuditEvent;
+  detail: string;
+  prev: string;
+}
+
+export interface AuditView {
+  intact: boolean;
+  count: number;
+  head_short: string;
+  problem: string | null;
+  /** Newest first. */
+  entries: AuditEntry[];
+}
+
 export interface NewWalletInput {
   id: string;
   label: string;
@@ -232,12 +263,13 @@ export const api = {
   setupBegin: () => call<SetupInfo>("setup_begin"),
   setupFinish: (password: string, code: string) => call<void>("setup_finish", { password, code }),
   unlock: (password: string, code: string) => call<void>("unlock", { password, code }),
-  lock: () => call<void>("lock"),
+  lock: (idle: boolean) => call<void>("lock", { idle }),
   startupChecks: () => call<SystemCheck[]>("startup_checks"),
   getReceive: (id: string, network: ReceiveNetwork, skip: number) =>
     call<ReceiveView>("get_receive", { id, network, skip }),
   previewSignerWallet: (text: string) => call<SignerWalletPreview>("preview_signer_wallet", { text }),
   addSignerWallet: (text: string) => call<WalletView[]>("add_signer_wallet", { text }),
+  getAuditLog: () => call<AuditView>("get_audit_log"),
 };
 
 export function errorText(e: unknown): string {

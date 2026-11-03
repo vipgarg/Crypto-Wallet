@@ -8,6 +8,7 @@ members = [
     "crates/data-sources",
     "crates/wallet-core",
     "crates/auth",
+    "crates/audit-log",
     "crates/sys-checks",
     "crates/watch-export",
     "crates/signer-core",

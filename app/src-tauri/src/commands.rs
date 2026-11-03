@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use audit_log::{Entry, Event};
 use chain_btc::{BtcAddress, Chain};
 use data_sources::fetch::Sources;
 use data_sources::{NetworkConfig, ReqwestClient};
@@ -36,6 +37,8 @@ pub struct AppState {
     pub config: NetworkConfig,
     pub http: ReqwestClient,
     pub progress: ProgressState,
+    /// Last check problems written to the audit log (to avoid repeats).
+    pub last_check_problems: Mutex<Option<String>>,
 }
 
 /// A whole refresh is stopped after this long; whatever hasn't answered by
@@ -185,10 +188,16 @@ pub fn add_wallet(
     input: NewWalletInput,
 ) -> Result<Vec<WalletView>, String> {
     let wallet = input.validate().map_err(|e| e.to_string())?;
-    state.session.with_registry(true, true, |r| {
+    let id = wallet.id.to_string();
+    let out = state.session.with_registry(true, true, |r| {
         r.add(wallet).map_err(|e| e.to_string())?;
         Ok(views(r))
-    })
+    })?;
+    state
+        .session
+        .audit()
+        .record(Event::WalletAdded, &format!("{id} (typed by hand)"));
+    Ok(out)
 }
 
 /// What the PC read from the tablet's export QR, shown for the user to
@@ -251,10 +260,17 @@ pub fn add_signer_wallet(
     text: String,
 ) -> Result<Vec<WalletView>, String> {
     let wallet = from_signer_export(&text).map_err(|e| e.to_string())?;
-    state.session.with_registry(true, true, |r| {
+    let detail = format!(
+        "{} (from the signer tablet, fingerprint {})",
+        wallet.id,
+        wallet.signer_fingerprint.as_deref().unwrap_or("?")
+    );
+    let out = state.session.with_registry(true, true, |r| {
         r.add(wallet).map_err(|e| e.to_string())?;
         Ok(views(r))
-    })
+    })?;
+    state.session.audit().record(Event::WalletAdded, &detail);
+    Ok(out)
 }
 
 #[tauri::command]
@@ -262,10 +278,12 @@ pub fn remove_wallet(state: State<'_, AppState>, id: String) -> Result<Vec<Walle
     if id.len() > 32 {
         return Err("Unknown wallet.".into());
     }
-    state.session.with_registry(true, true, |r| {
+    let out = state.session.with_registry(true, true, |r| {
         r.remove(&id).map_err(|e| e.to_string())?;
         Ok(views(r))
-    })
+    })?;
+    state.session.audit().record(Event::WalletRemoved, &id);
+    Ok(out)
 }
 
 #[tauri::command]
@@ -608,8 +626,8 @@ pub async fn unlock(
 }
 
 #[tauri::command]
-pub fn lock(state: State<'_, AppState>) {
-    state.session.lock();
+pub fn lock(state: State<'_, AppState>, idle: bool) {
+    state.session.lock(idle);
 }
 
 // ---------------------------------------------------------------------------
@@ -639,8 +657,94 @@ pub async fn startup_checks(state: State<'_, AppState>) -> Result<Vec<sys_checks
         ),
         blocks_sends: false,
     });
+    let audit = state.session.audit().status();
+    checks.push(sys_checks::Check {
+        id: "audit_log",
+        title: "Audit log",
+        status: if audit.intact {
+            sys_checks::Status::Pass
+        } else {
+            sys_checks::Status::Fail
+        },
+        detail: match &audit.problem {
+            None => format!(
+                "Intact: {} entries, each linked to the one before. Head {}.",
+                audit.count, audit.head_short
+            ),
+            Some(p) => p.clone(),
+        },
+        blocks_sends: true,
+    });
+    record_check_problems(&state, &checks);
     Ok(checks)
 }
+
+/// Write failed or warning checks to the audit log, but only when the list of
+/// problems changed since the last time (the checks run often).
+fn record_check_problems(state: &AppState, checks: &[sys_checks::Check]) {
+    let problems: Vec<String> = checks
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.status,
+                sys_checks::Status::Fail | sys_checks::Status::Warn
+            )
+        })
+        .map(|c| {
+            let word = if matches!(c.status, sys_checks::Status::Fail) {
+                "failed"
+            } else {
+                "warning"
+            };
+            format!("{} {word}", c.title)
+        })
+        .collect();
+    let summary = problems.join("; ");
+    let Ok(mut last) = state.last_check_problems.lock() else {
+        return;
+    };
+    if last.as_deref() == Some(summary.as_str()) {
+        return;
+    }
+    if !summary.is_empty() {
+        state.session.audit().record(Event::ChecksProblem, &summary);
+    }
+    *last = Some(summary);
+}
+
+#[derive(Serialize)]
+pub struct AuditView {
+    intact: bool,
+    count: u64,
+    head_short: String,
+    problem: Option<String>,
+    /// Newest first.
+    entries: Vec<Entry>,
+}
+
+/// Audit log page: the newest entries and whether the chain is intact.
+#[tauri::command]
+pub fn get_audit_log(state: State<'_, AppState>) -> Result<AuditView, String> {
+    // Login required (same gate as the wallet list).
+    state.session.with_registry(true, false, |_| Ok(()))?;
+    let audit = state.session.audit();
+    let (entries, read_problem) = match audit.recent(AUDIT_PAGE) {
+        Ok(e) => (e, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    let st = audit.status();
+    let problem = read_problem.or(st.problem);
+    Ok(AuditView {
+        intact: problem.is_none(),
+        count: st.count,
+        head_short: st.head_short,
+        problem,
+        entries,
+    })
+}
+
+/// Entries shown on the Log page.
+const AUDIT_PAGE: usize = 300;
 
 #[cfg(test)]
 mod tests {
@@ -705,7 +809,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            16,
+            17,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

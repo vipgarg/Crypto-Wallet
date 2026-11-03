@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use audit_log::{AuditLog, Event};
 use auth::lockout::Lockout;
 use auth::store::{self, KdfParams, StoreError};
 use auth::totp;
@@ -61,12 +62,15 @@ pub struct Paths {
     /// store at setup and then deleted.
     pub legacy_registry: PathBuf,
     pub lockout: PathBuf,
+    /// Hash-chained audit log (not encrypted; holds no addresses or labels).
+    pub audit: PathBuf,
 }
 
 pub struct SessionState {
     inner: Mutex<Session>,
     pending_totp: Mutex<Option<Zeroizing<Vec<u8>>>>,
     paths: Paths,
+    audit: AuditLog,
 }
 
 #[derive(Serialize)]
@@ -103,11 +107,17 @@ impl SessionState {
         } else {
             Session::NeedsSetup
         };
+        let audit = AuditLog::open(paths.audit.clone());
         Self {
             inner: Mutex::new(session),
             pending_totp: Mutex::new(None),
             paths,
+            audit,
         }
+    }
+
+    pub fn audit(&self) -> &AuditLog {
+        &self.audit
     }
 
     fn read_lockout(&self) -> Lockout {
@@ -195,6 +205,13 @@ impl SessionState {
             let _ = fs::remove_file(&self.paths.legacy_registry);
         }
         *self.pending_totp.lock().map_err(|_| INTERNAL.to_owned())? = None;
+        self.audit.record(
+            Event::SetupCompleted,
+            &format!(
+                "password and authenticator set; {} wallet(s) moved into the encrypted store",
+                unlocked.registry.wallets.len()
+            ),
+        );
         *s = Session::Unlocked(Box::new(unlocked));
         Ok(())
     }
@@ -214,6 +231,10 @@ impl SessionState {
         let mut lockout = self.read_lockout();
         let now = now_unix();
         if let Err(wait) = lockout.check(now) {
+            self.audit.record(
+                Event::LoginBlocked,
+                &format!("attempt refused: {wait} s left of the wrong-attempt delay"),
+            );
             return Err(format!(
                 "Too many wrong attempts. Try again in {wait} seconds."
             ));
@@ -230,6 +251,13 @@ impl SessionState {
         let fail = |lockout: &mut Lockout| {
             lockout.record_failure(now_unix());
             self.write_lockout(lockout);
+            self.audit.record(
+                Event::LoginFailed,
+                &format!(
+                    "wrong password or code ({} wrong attempt(s) in a row)",
+                    lockout.failures
+                ),
+            );
             WRONG.to_owned()
         };
         let (contents, key, kdf) = match opened {
@@ -254,15 +282,28 @@ impl SessionState {
         };
         // Save the used step so the same code can't be used again.
         self.persist(&unlocked)?;
+        self.audit.record(
+            Event::LoginSucceeded,
+            &format!("{} wallet(s)", unlocked.registry.wallets.len()),
+        );
         *s = Session::Unlocked(Box::new(unlocked));
         Ok(())
     }
 
-    pub fn lock(&self) {
+    /// Lock now. `idle` = the app's idle timer did it (not the Lock button).
+    pub fn lock(&self, idle: bool) {
         if let Ok(mut s) = self.inner.lock() {
             if matches!(*s, Session::Unlocked(_)) {
                 // Dropping `Unlocked` zeroizes the key and TOTP secret.
                 *s = Session::Locked;
+                if idle {
+                    self.audit.record(
+                        Event::IdleLocked,
+                        &format!("no activity for {} minutes", IDLE_LOCK.as_secs() / 60),
+                    );
+                } else {
+                    self.audit.record(Event::Locked, "Lock button");
+                }
             }
         }
     }
@@ -281,6 +322,10 @@ impl SessionState {
         };
         if u.last_activity.elapsed() > IDLE_LOCK {
             *s = Session::Locked;
+            self.audit.record(
+                Event::IdleLocked,
+                &format!("no activity for {} minutes", IDLE_LOCK.as_secs() / 60),
+            );
             return Err(LOCKED_MSG.into());
         }
         if touch {
@@ -311,6 +356,7 @@ mod tests {
             store: dir.join("store.v1.json"),
             legacy_registry: dir.join("wallets.json"),
             lockout: dir.join("lockout.json"),
+            audit: dir.join("audit.jsonl"),
         }
     }
 
@@ -349,7 +395,7 @@ mod tests {
         let text = fs::read_to_string(&store_path).expect("store");
         assert!(!text.contains(&info.secret));
 
-        s.lock();
+        s.lock(false);
         assert!(s
             .with_registry(true, false, |_| Ok(()))
             .err()
@@ -369,5 +415,26 @@ mod tests {
             .unlock("correct horse battery", "123456")
             .err()
             .is_some_and(|e| e.contains("Try again")));
+
+        // Each step was written to the audit log, oldest first.
+        let events: Vec<Event> = s
+            .audit()
+            .recent(20)
+            .expect("audit")
+            .into_iter()
+            .rev()
+            .map(|e| e.event)
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                Event::SetupCompleted,
+                Event::Locked,
+                Event::LoginFailed,
+                Event::LoginFailed,
+                Event::LoginBlocked,
+            ]
+        );
+        assert!(s.audit().status().intact);
     }
 }

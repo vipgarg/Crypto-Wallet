@@ -45,6 +45,7 @@ Still to do for this gate: Ethereum (compare with etherscan.io) and Bitcoin (com
 | Allowance and permission baselines recorded | ⏳ Not built |
 | Poisoning-style 0-value transfer detected and hidden | 🔧 Built for TRON (`5a51049`, `0452a4f`; unit-tested with a real Base58 look-alike address). Live check with a testnet 0-value transfer still to do. Ethereum and Bitcoin history not built yet. |
 | No secret-handling code paths in the online app | ✅ By design; registry refuses seeds/private keys (tested) |
+| Audit log (hash-chained, §9.5) | 🔧 Built: logins, failed/blocked attempts, locks, wallet changes, check problems; verified at start, broken log kept and a new chain started; Log page + Checks entry. Tested (edit, removal, reorder, cut-off, change while running). Owner: review weekly; write the head on paper. External monitor checkpoints not built yet. |
 | Third Bitcoin source (`emzy-mempool`, mempool.emzy.de) | 🔧 Added so one slow or rate-limited provider no longer leaves Bitcoin unverified (the other two must still agree exactly). Not reachable from the build environment: **owner to confirm it answers from the PC** (About page lists it; a refresh log line shows its timing). |
 | Start-up checks and login (§9.8) | 🔧 Built: password + TOTP, encrypted store, lockout, idle lock, PC checks. Tested end-to-end on Linux (setup with migration, wrong code, login, lock, checks page). Windows-specific checks compiled for Windows and parser-tested; **first run on the owner's Windows PC still to do.** |
 

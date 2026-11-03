@@ -32,12 +32,22 @@ pub fn run() {
                 store: dir.join("store.v1.json"),
                 legacy_registry: dir.join("wallets.json"),
                 lockout: dir.join("lockout.json"),
+                audit: dir.join("audit.jsonl"),
             });
+            session.audit().record(
+                audit_log::Event::AppStarted,
+                &format!(
+                    "version {} · network config {}",
+                    env!("CARGO_PKG_VERSION"),
+                    config.sha256.chars().take(12).collect::<String>()
+                ),
+            );
             app.manage(AppState {
                 session: Arc::new(session),
                 config,
                 http,
                 progress: commands::ProgressState::default(),
+                last_check_problems: std::sync::Mutex::new(None),
             });
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -65,6 +75,7 @@ pub fn run() {
             commands::get_receive,
             commands::preview_signer_wallet,
             commands::add_signer_wallet,
+            commands::get_audit_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

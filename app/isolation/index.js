@@ -19,6 +19,7 @@ const ALLOWED = new Set([
   "get_receive",
   "preview_signer_wallet",
   "add_signer_wallet",
+  "get_audit_log",
 ]);
 
 window.__TAURI_ISOLATION_HOOK__ = (payload) => {

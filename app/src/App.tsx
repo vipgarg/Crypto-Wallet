@@ -19,8 +19,9 @@ import {
   type WalletView,
 } from "./api";
 import { AddFromSigner } from "./ScanSigner";
+import { AuditLogPage } from "./AuditLog";
 
-type Page = "portfolio" | "receive" | "activity" | "wallets" | "checks" | "about";
+type Page = "portfolio" | "receive" | "activity" | "wallets" | "checks" | "log" | "about";
 
 const STATUS_TEXT: Record<BalanceStatus, string> = {
   verified: "Verified (2+ sources agree)",
@@ -719,7 +720,7 @@ function MainApp({ onLock }: { onLock: () => void }) {
     events.forEach((e) => window.addEventListener(e, touch, { passive: true }));
     const timer = window.setInterval(() => {
       if (Date.now() - last > IDLE_LOCK_MS) {
-        void api.lock().finally(onLock);
+        void api.lock(true).finally(onLock);
       }
     }, 15_000);
     return () => {
@@ -735,12 +736,12 @@ function MainApp({ onLock }: { onLock: () => void }) {
           Watch-Only Wallet <span className="tag">no keys on this computer</span>
         </div>
         <nav>
-          {(["portfolio", "receive", "activity", "wallets", "checks", "about"] as Page[]).map((p) => (
+          {(["portfolio", "receive", "activity", "wallets", "checks", "log", "about"] as Page[]).map((p) => (
             <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
               {p[0].toUpperCase() + p.slice(1)}
             </button>
           ))}
-          <button className="lock-btn" onClick={() => void api.lock().finally(onLock)} title="Lock the app now">
+          <button className="lock-btn" onClick={() => void api.lock(false).finally(onLock)} title="Lock the app now">
             🔒 Lock
           </button>
         </nav>
@@ -756,6 +757,7 @@ function MainApp({ onLock }: { onLock: () => void }) {
             <ChecksPanel />
           </section>
         )}
+        {page === "log" && <AuditLogPage />}
         {page === "about" && <AboutPage />}
       </main>
     </div>

@@ -19,6 +19,7 @@ const COMMANDS: &[&str] = &[
     "get_receive",
     "preview_signer_wallet",
     "add_signer_wallet",
+    "get_audit_log",
 ];
 
 fn main() {

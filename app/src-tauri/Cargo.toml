@@ -16,6 +16,7 @@ tauri-build = { version = "2.5", features = ["isolation"] }
 
 [dependencies]
 auth = { path = "../../crates/auth" }
+audit-log = { path = "../../crates/audit-log" }
 sys-checks = { path = "../../crates/sys-checks" }
 qrcode = { version = "0.14", default-features = false }
 zeroize = "1"
