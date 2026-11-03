@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use chain_tron::history::{CallKind, EventKind, Trc20Event, TronTx, TxAction};
 use chain_tron::TronAddress;
 use serde::Serialize;
-use wallet_types::{format_base_units, Amount, Asset, WalletId};
+use wallet_types::{format_base_units, Amount, Asset, Network, WalletId};
 
 /// Transfers of genuine USDT below this (1 USDT) are treated as dust.
 pub const DUST_BASE_UNITS: u128 = 1_000_000;
@@ -46,8 +46,14 @@ pub enum Direction {
 pub enum Flag {
     /// Moved 0 tokens: the classic poisoning trick.
     ZeroValue,
-    /// Less than 1 USDT.
-    Dust,
+    /// A tiny amount (below `below`, e.g. "1 USDT"): typical of poisoning
+    /// and tracking attempts.
+    Dust { below: String },
+    /// Bitcoin dust received: may be used to track you; don't spend it
+    /// together with your other coins.
+    BtcDust { below: String },
+    /// Not confirmed in a block yet.
+    Unconfirmed,
     /// The counterparty shares the first or last characters with `similar_to`
     /// but is a different address.
     LookAlike {
@@ -94,6 +100,8 @@ pub struct ActivityEntry {
 #[derive(Debug, Clone, Serialize)]
 pub struct WalletActivity {
     pub wallet_id: WalletId,
+    pub network: Network,
+    /// The address shown (for a Bitcoin account key: a short description).
     pub address: String,
     pub source: String,
     pub entries: Vec<ActivityEntry>,
@@ -272,7 +280,9 @@ pub fn classify_tron_with_known(
             if e.kind == EventKind::Transfer && genuine {
                 match e.value {
                     Some(0) => flags.push(Flag::ZeroValue),
-                    Some(v) if v < DUST_BASE_UNITS => flags.push(Flag::Dust),
+                    Some(v) if v < DUST_BASE_UNITS => flags.push(Flag::Dust {
+                        below: "1 USDT".into(),
+                    }),
                     _ => {}
                 }
             }
@@ -283,7 +293,7 @@ pub fn classify_tron_with_known(
             let hidden = !genuine
                 || flags
                     .iter()
-                    .any(|f| matches!(f, Flag::ZeroValue | Flag::Dust))
+                    .any(|f| matches!(f, Flag::ZeroValue | Flag::Dust { .. }))
                 || (direction == Direction::NotInvolved && !is_approval);
 
             ActivityEntry {
@@ -387,7 +397,9 @@ pub fn classify_tron_transactions(
                     if *amount_sun == 0 {
                         flags.push(Flag::ZeroValue);
                     } else if *amount_sun < DUST_SUN && direction == Direction::In {
-                        flags.push(Flag::Dust);
+                        flags.push(Flag::Dust {
+                            below: "1 TRX".into(),
+                        });
                     }
                     hidden = direction == Direction::NotInvolved
                         || (direction == Direction::In && *amount_sun < DUST_SUN);
@@ -647,10 +659,33 @@ pub fn summarize(
     entries: Vec<ActivityEntry>,
     unreadable: usize,
 ) -> WalletActivity {
+    summarize_for(
+        wallet_id,
+        Network::Tron,
+        address.to_base58(),
+        source,
+        entries,
+        unreadable,
+    )
+}
+
+/// Page summary for any network.
+pub fn summarize_for(
+    wallet_id: WalletId,
+    network: Network,
+    address: String,
+    source: String,
+    entries: Vec<ActivityEntry>,
+    unreadable: usize,
+) -> WalletActivity {
     let hidden_count = entries.iter().filter(|e| e.hidden).count();
     let approval_count = entries
         .iter()
-        .filter(|e| e.flags.contains(&Flag::Approval))
+        .filter(|e| {
+            e.flags
+                .iter()
+                .any(|f| matches!(f, Flag::Approval | Flag::SpentByOther))
+        })
         .count();
     let lookalike_count = entries
         .iter()
@@ -666,7 +701,8 @@ pub fn summarize(
     }
     WalletActivity {
         wallet_id,
-        address: address.to_base58(),
+        network,
+        address,
         source,
         entries,
         hidden_count,
@@ -793,7 +829,7 @@ mod tests {
             .flags
             .iter()
             .any(|f| matches!(f, Flag::LookAlike { .. })));
-        assert!(out[2].hidden && out[2].flags.contains(&Flag::Dust));
+        assert!(out[2].hidden && out[2].flags.iter().any(|f| matches!(f, Flag::Dust { .. })));
         assert!(out[2].flags.iter().any(
             |f| matches!(f, Flag::LookAlike { similar_to, .. } if *similar_to == friend.to_base58())
         ));
@@ -989,7 +1025,7 @@ mod tests {
 
         assert!(!out[0].hidden && out[0].flags.is_empty(), "{:?}", out[0]);
         assert_eq!(out[0].amount.as_deref(), Some("10"));
-        assert!(out[1].hidden && out[1].flags.contains(&Flag::Dust));
+        assert!(out[1].hidden && out[1].flags.iter().any(|f| matches!(f, Flag::Dust { .. })));
         assert!(out[1]
             .flags
             .iter()

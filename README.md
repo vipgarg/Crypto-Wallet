@@ -22,9 +22,9 @@ A personal self-custody wallet, built in phases. This repository currently conta
 | Audit log | **Log** page: every login (and failed attempt), lock, wallet added or removed, and PC check problem, newest first. Each entry is hash-linked to the one before, and the whole log is checked at every start (result also on the Checks page). Catches accidental damage and edits to old entries; not tamper-proof against someone controlling the PC, so write the shown *head* on paper now and then. Not encrypted (failed logins are logged before login), so it never contains addresses, labels or amounts. |
 | Security boundary | Tauri 2 with a strict Content-Security-Policy, the isolation pattern, a capability file allowing exactly the 17 reviewed commands, navigation locked to the app, no plugins (no shell/fs/http/updater). |
 
-**Also built:** TRON activity (transfers and transactions) with address-poisoning detection.
+**Also built:** Activity (history) for TRON, Ethereum and Bitcoin with address-poisoning detection: 0-value and dust transfers and fake tokens hidden, look-alike addresses flagged, approvals and tokens moved by someone else always shown. History comes from one source per network (TronGrid, Blockscout, Esplora) and is labelled as not cross-checked.
 
-**Not built yet:** Ethereum and Bitcoin activity, policy checkpoints to an external monitor.
+**Not built yet:** address book with safety rules, policy checkpoints to an external monitor, sending (Phase 2).
 
 ## Repository layout
 

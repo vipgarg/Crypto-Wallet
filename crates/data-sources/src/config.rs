@@ -21,6 +21,9 @@ pub enum ProviderKind {
     EthJsonRpc,
     /// TRON full-node HTTP API (`/wallet/...`).
     TronHttp,
+    /// Blockscout indexer REST API (`/api/v2`, Ethereum). **History only**:
+    /// never asked for balances, so it can't affect "verified".
+    Blockscout,
 }
 
 impl ProviderKind {
@@ -29,7 +32,13 @@ impl ProviderKind {
             ProviderKind::Esplora => Network::Bitcoin,
             ProviderKind::EthJsonRpc => Network::Ethereum,
             ProviderKind::TronHttp => Network::Tron,
+            ProviderKind::Blockscout => Network::Ethereum,
         }
+    }
+
+    /// True for providers that answer balance questions (cross-checked).
+    pub fn answers_balances(self) -> bool {
+        !matches!(self, ProviderKind::Blockscout)
     }
 }
 
@@ -51,9 +60,16 @@ pub const FEATURE_TRC20_HISTORY: &str = "trc20_history";
 /// TronGrid's `/v1` account transaction list (TRX transfers, contract calls,
 /// permission changes, staking…).
 pub const FEATURE_ACCOUNT_HISTORY: &str = "account_history";
-const KNOWN_FEATURES: [(&str, ProviderKind); 2] = [
+/// ERC-20 token transfer history (Blockscout `/api/v2/.../token-transfers`).
+pub const FEATURE_ERC20_HISTORY: &str = "erc20_history";
+/// Bitcoin per-address transaction list (Esplora `/address/{a}/txs`).
+pub const FEATURE_ADDRESS_HISTORY: &str = "address_history";
+const KNOWN_FEATURES: [(&str, ProviderKind); 5] = [
     (FEATURE_TRC20_HISTORY, ProviderKind::TronHttp),
     (FEATURE_ACCOUNT_HISTORY, ProviderKind::TronHttp),
+    (FEATURE_ACCOUNT_HISTORY, ProviderKind::Blockscout),
+    (FEATURE_ERC20_HISTORY, ProviderKind::Blockscout),
+    (FEATURE_ADDRESS_HISTORY, ProviderKind::Esplora),
 ];
 
 impl ProviderConfig {
@@ -169,8 +185,22 @@ impl NetworkConfig {
         })
     }
 
+    /// Providers asked for balances on `network` (indexers excluded).
     pub fn providers_for(&self, network: Network) -> impl Iterator<Item = &ProviderConfig> {
-        self.providers.iter().filter(move |p| p.network == network)
+        self.providers
+            .iter()
+            .filter(move |p| p.network == network && p.kind.answers_balances())
+    }
+
+    /// Every provider of `network` offering `feature` (history), in config order.
+    pub fn with_feature<'a>(
+        &'a self,
+        network: Network,
+        feature: &'a str,
+    ) -> impl Iterator<Item = &'a ProviderConfig> {
+        self.providers
+            .iter()
+            .filter(move |p| p.network == network && p.has_feature(feature))
     }
 
     /// Networks with fewer than two independent operators configured.
@@ -205,6 +235,20 @@ mod tests {
         );
         assert!(c.networks_lacking_independence().is_empty());
         assert_eq!(c.sha256.len(), 64);
+        // History indexers never answer balances.
+        assert!(c
+            .providers_for(Network::Ethereum)
+            .all(|p| p.kind != ProviderKind::Blockscout));
+        assert!(
+            c.with_feature(Network::Ethereum, FEATURE_ERC20_HISTORY)
+                .count()
+                >= 1
+        );
+        assert!(
+            c.with_feature(Network::Bitcoin, FEATURE_ADDRESS_HISTORY)
+                .count()
+                >= 2
+        );
     }
 
     fn with_provider(extra: &str) -> String {

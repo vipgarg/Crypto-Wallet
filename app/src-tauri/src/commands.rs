@@ -17,16 +17,25 @@ use chain_btc::{BtcAddress, Chain};
 use data_sources::fetch::Sources;
 use data_sources::{NetworkConfig, ReqwestClient};
 use serde::Serialize;
+use std::collections::HashSet;
 use tauri::State;
+
+use chain_eth::history::EthTx;
 use wallet_core::activity::{
     classify_tron_transactions, classify_tron_with_known, known_counterparties, summarize,
-    transactions_view, KnownAddress, WalletActivity,
+    summarize_for, transactions_view, Known, KnownAddress, WalletActivity,
+};
+use wallet_core::btc_activity::{
+    classify_btc, known_counterparties_btc, load_btc_history, MAX_PAGES_PER_ADDRESS,
+};
+use wallet_core::eth_activity::{
+    classify_eth_transactions, classify_eth_transfers, known_counterparties_eth, KnownEth,
 };
 use wallet_core::{
     build_portfolio, from_signer_export, BtcWatch, NewWalletInput, Portfolio, ProgressLevel,
     ProgressSink, Registry, WatchWallet,
 };
-use wallet_types::Tier;
+use wallet_types::{Network, Tier};
 use zeroize::Zeroizing;
 
 use crate::session::{AuthStatus, SessionState, SetupInfo};
@@ -317,10 +326,14 @@ pub async fn get_portfolio(state: State<'_, AppState>) -> Result<Portfolio, Stri
 /// History requests are a single call; give up after this long.
 const ACTIVITY_TIME_LIMIT: Duration = Duration::from_secs(30);
 
+/// Bitcoin history scans every used address one by one, so it gets longer.
+const BTC_ACTIVITY_TIME_LIMIT: Duration = Duration::from_secs(150);
+
 #[tauri::command]
 pub async fn get_activity(
     state: State<'_, AppState>,
     id: String,
+    network: Network,
 ) -> Result<WalletActivity, String> {
     if id.len() > 32 {
         return Err("Unknown wallet.".into());
@@ -331,10 +344,25 @@ pub async fn get_activity(
         .iter()
         .find(|w| w.id.as_str() == id)
         .ok_or_else(|| "Unknown wallet.".to_owned())?;
-    let me = wallet.tron.ok_or_else(|| {
-        "Activity is available for TRON addresses for now. Ethereum and Bitcoin are next."
-            .to_owned()
-    })?;
+    match network {
+        Network::Tron => tron_activity(&state, &registry, wallet).await,
+        Network::Ethereum => eth_activity(&state, &registry, wallet).await,
+        Network::Bitcoin => btc_activity(&state, &registry, wallet).await,
+    }
+}
+
+fn timeout_msg() -> String {
+    "The history provider didn't answer in time.".to_owned()
+}
+
+async fn tron_activity(
+    state: &AppState,
+    registry: &Registry,
+    wallet: &WatchWallet,
+) -> Result<WalletActivity, String> {
+    let me = wallet
+        .tron
+        .ok_or_else(|| "This wallet has no TRON address.".to_owned())?;
     // Every other TRON address you watch, for the look-alike check.
     let own: Vec<KnownAddress> = registry
         .wallets
@@ -348,7 +376,6 @@ pub async fn get_activity(
         .filter(|k| k.address != me)
         .collect();
     let sources = Sources::new(&state.http, &state.config);
-    let timeout_msg = || "The history provider didn't answer within 30 seconds.".to_owned();
     // Transfers (token movements) and the account's own transactions, both at once.
     let (transfers, transactions) = futures_util::future::join(
         tokio::time::timeout(ACTIVITY_TIME_LIMIT, sources.tron_history(&me)),
@@ -381,6 +408,141 @@ pub async fn get_activity(
         let entries = classify_tron_transactions(&me, pinned, &t.txs, &known);
         transactions_view(t.provider, entries, t.unreadable)
     }));
+    Ok(page)
+}
+
+async fn eth_activity(
+    state: &AppState,
+    registry: &Registry,
+    wallet: &WatchWallet,
+) -> Result<WalletActivity, String> {
+    let me = wallet
+        .eth
+        .ok_or_else(|| "This wallet has no Ethereum address.".to_owned())?;
+    let own: Vec<KnownEth> = registry
+        .wallets
+        .iter()
+        .filter_map(|w| {
+            w.eth.map(|address| KnownEth {
+                address,
+                label: w.label.clone(),
+            })
+        })
+        .collect();
+    let sources = Sources::new(&state.http, &state.config);
+    let (transfers, transactions) = futures_util::future::join(
+        tokio::time::timeout(ACTIVITY_TIME_LIMIT, sources.eth_token_transfers(&me)),
+        tokio::time::timeout(ACTIVITY_TIME_LIMIT, sources.eth_transactions(&me)),
+    )
+    .await;
+    let transfers = transfers
+        .map_err(|_| timeout_msg())?
+        .map_err(|e| format!("Couldn't load token transfers: {e}"))?;
+    let transactions = transactions
+        .map_err(|_| timeout_msg())
+        .and_then(|r| r.map_err(|e| format!("Couldn't load transactions: {e}")));
+
+    let usdt = &state.config.usdt_erc20;
+    let txs: &[EthTx] = transactions
+        .as_ref()
+        .map(|t| t.value.items.as_slice())
+        .unwrap_or(&[]);
+    // "Spent by someone else" needs the full list of what this address sent
+    // for the period the transfers cover.
+    let my_txids: Option<HashSet<String>> = transactions.as_ref().ok().and_then(|t| {
+        let oldest_tx = t.value.items.iter().map(|x| x.time_ms).min().unwrap_or(0);
+        let covered = !t.value.more || transfers.value.items.iter().all(|x| x.time_ms >= oldest_tx);
+        covered.then(|| {
+            t.value
+                .items
+                .iter()
+                .filter(|x| x.from == me)
+                .map(|x| x.txid.to_lowercase())
+                .collect()
+        })
+    });
+    let known = known_counterparties_eth(&me, &own, usdt, &transfers.value.items, txs);
+    let entries =
+        classify_eth_transfers(&me, usdt, &transfers.value.items, &known, my_txids.as_ref());
+    let mut page = summarize_for(
+        wallet.id.clone(),
+        Network::Ethereum,
+        me.to_checksum(),
+        transfers.provider.clone(),
+        entries,
+        transfers.value.unreadable,
+    );
+    if transfers.value.more {
+        page.notes.push(
+            "Showing the latest token transfers only; older ones can be seen on a block explorer."
+                .into(),
+        );
+    }
+    page.attach_transactions(transactions.map(|t| {
+        let entries = classify_eth_transactions(&me, usdt, &t.value.items, &known);
+        transactions_view(t.provider, entries, t.value.unreadable)
+    }));
+    Ok(page)
+}
+
+async fn btc_activity(
+    state: &AppState,
+    registry: &Registry,
+    wallet: &WatchWallet,
+) -> Result<WalletActivity, String> {
+    let watch = wallet
+        .btc
+        .as_ref()
+        .ok_or_else(|| "This wallet has no Bitcoin key or address.".to_owned())?;
+    // Single Bitcoin addresses of your other wallets, for the look-alike check.
+    let own_other: Vec<Known> = registry
+        .wallets
+        .iter()
+        .filter(|w| w.id != wallet.id)
+        .filter_map(|w| match &w.btc {
+            Some(BtcWatch::Address(a)) => Some((
+                BtcAddress::to_string(a),
+                format!("your wallet \"{}\"", w.label),
+            )),
+            _ => None,
+        })
+        .collect();
+    let sources = Sources::new(&state.http, &state.config);
+    let h = tokio::time::timeout(BTC_ACTIVITY_TIME_LIMIT, load_btc_history(&sources, watch))
+        .await
+        .map_err(|_| timeout_msg())?
+        .map_err(|e| format!("Couldn't load Bitcoin history: {e}"))?;
+    let known = known_counterparties_btc(&h, &own_other);
+    let entries = classify_btc(&h, &known);
+    let address = match watch {
+        BtcWatch::AccountXpub(x) => format!(
+            "Account key {} · {} address(es) checked, {} used for receiving",
+            x.0.fingerprint(),
+            h.mine.len(),
+            h.used_receive.len()
+        ),
+        BtcWatch::Address(a) => BtcAddress::to_string(a),
+    };
+    let source = h.providers.iter().cloned().collect::<Vec<_>>().join(", ");
+    let mut page = summarize_for(
+        wallet.id.clone(),
+        Network::Bitcoin,
+        address,
+        source,
+        entries,
+        h.unreadable,
+    );
+    if let Some(why) = &h.incomplete {
+        page.notes
+            .push(format!("History is incomplete. {why}. Try again later."));
+    }
+    if h.truncated > 0 {
+        page.notes.push(format!(
+            "{} address(es) have more than {} transactions; the oldest were left out.",
+            h.truncated,
+            MAX_PAGES_PER_ADDRESS * chain_btc::esplora::TXS_PAGE
+        ));
+    }
     Ok(page)
 }
 

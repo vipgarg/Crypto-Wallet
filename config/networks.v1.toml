@@ -40,6 +40,9 @@ network = "bitcoin"
 kind = "esplora"
 base_url = "https://blockstream.info/api"
 operator = "Blockstream"
+# Also used for Bitcoin history (per-address transaction lists). History
+# comes from one source at a time and is labelled as such.
+features = ["address_history"]
 
 [[providers]]
 # Third Bitcoin source, so one slow or rate-limited provider no longer leaves
@@ -51,6 +54,7 @@ network = "bitcoin"
 kind = "esplora"
 base_url = "https://mempool.emzy.de/api"
 operator = "Emzy (independent mempool instance)"
+features = ["address_history"]
 
 [[providers]]
 id = "publicnode-eth"
@@ -72,6 +76,17 @@ network = "ethereum"
 kind = "eth_json_rpc"
 base_url = "https://1rpc.io/eth"
 operator = "1RPC (Automata Network)"
+
+[[providers]]
+# Ethereum HISTORY only (token transfers and the address's transactions).
+# Kind "blockscout" is never asked for balances, so it can't make a balance
+# "verified"; history from it is shown as single-source information.
+id = "blockscout-eth"
+network = "ethereum"
+kind = "blockscout"
+base_url = "https://eth.blockscout.com"
+operator = "Blockscout"
+features = ["erc20_history", "account_history"]
 
 [[providers]]
 id = "trongrid"

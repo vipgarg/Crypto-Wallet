@@ -38,12 +38,12 @@ Still to do for this gate: Ethereum (compare with etherscan.io) and Bitcoin (com
 
 | Item | Status |
 |---|---|
-| Config hash identical on Windows and Linux | ✅ Fixed in `04a304a` (LF-normalised hash + `.gitattributes`). The hash changes with every reviewed config change: `dbc4204f…979f` (`7dc60d7`), `d2a17131…0134` (`5a51049`), `8b27e487…4ae5` (`0452a4f`), `34a37160…7b3d` (third Bitcoin source, current). |
+| Config hash identical on Windows and Linux | ✅ Fixed in `04a304a` (LF-normalised hash + `.gitattributes`). The hash changes with every reviewed config change: `dbc4204f…979f` (`7dc60d7`), `d2a17131…0134` (`5a51049`), `8b27e487…4ae5` (`0452a4f`), `34a37160…7b3d` (third Bitcoin source), `14fbbbbc…54f8` (Blockscout history indexer, current). |
 | Test outgoing tx triggers an alert within 5 minutes with the PC off | ⏳ Set up per `docs/alerts-guide.md`, then record each test below |
 | Monitor heartbeat on both channels | ⏳ Not built |
 | Restoring an older `policy.db` is detected | ⏳ Not built |
 | Allowance and permission baselines recorded | ⏳ Not built |
-| Poisoning-style 0-value transfer detected and hidden | 🔧 Built for TRON (`5a51049`, `0452a4f`; unit-tested with a real Base58 look-alike address). Live check with a testnet 0-value transfer still to do. Ethereum and Bitcoin history not built yet. |
+| Poisoning-style 0-value transfer detected and hidden | 🔧 Built for TRON (`5a51049`, `0452a4f`), **Ethereum** (Blockscout: token transfers + transactions; 0-value `transferFrom` poisoning, fake tokens, USDT/ETH dust, approvals incl. unlimited and set-for-all, USDT moved by someone else) and **Bitcoin** (Esplora per used address; dust < 1,000 sats hidden with a tracking warning, look-alikes vs own receive addresses and real counterparties). Unit-tested; not yet compared live with etherscan.io / a Bitcoin explorer. **Owner:** load Activity for a known Ethereum and Bitcoin address and compare with an explorer, as done for TRON. |
 | No secret-handling code paths in the online app | ✅ By design; registry refuses seeds/private keys (tested) |
 | Audit log (hash-chained, §9.5) | 🔧 Built: logins, failed/blocked attempts, locks, wallet changes, check problems; verified at start, broken log kept and a new chain started; Log page + Checks entry. Tested (edit, removal, reorder, cut-off, change while running). Owner: review weekly; write the head on paper. External monitor checkpoints not built yet. |
 | Third Bitcoin source (`emzy-mempool`, mempool.emzy.de) | 🔧 Added so one slow or rate-limited provider no longer leaves Bitcoin unverified (the other two must still agree exactly). Not reachable from the build environment: **owner to confirm it answers from the PC** (About page lists it; a refresh log line shows its timing). |

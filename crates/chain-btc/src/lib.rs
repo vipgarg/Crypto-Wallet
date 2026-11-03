@@ -264,6 +264,110 @@ pub mod esplora {
         })
     }
 
+    /// One input or output of a transaction: its address (if it has a
+    /// standard one) and value in satoshis.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct TxIo {
+        pub address: Option<String>,
+        pub sats: u64,
+    }
+
+    /// A transaction as returned by `GET /address/{a}/txs`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct BtcTx {
+        pub txid: String,
+        /// `None` while unconfirmed.
+        pub block_time: Option<u64>,
+        pub inputs: Vec<TxIo>,
+        pub outputs: Vec<TxIo>,
+        pub fee_sats: u64,
+    }
+
+    /// Esplora returns at most this many confirmed transactions per page.
+    pub const TXS_PAGE: usize = 25;
+
+    /// Path of the first page of an address's transactions (newest first,
+    /// unconfirmed ones included).
+    pub fn txs_path(addr: &str) -> String {
+        format!("/address/{addr}/txs")
+    }
+
+    /// Path of the next page: confirmed transactions older than `last_txid`.
+    pub fn txs_after_path(addr: &str, last_txid: &str) -> String {
+        format!("/address/{addr}/txs/chain/{last_txid}")
+    }
+
+    fn io(v: &serde_json::Value) -> Option<TxIo> {
+        Some(TxIo {
+            address: v
+                .get("scriptpubkey_address")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            sats: v.get("value")?.as_u64()?,
+        })
+    }
+
+    fn parse_tx(t: &serde_json::Value) -> Option<BtcTx> {
+        let txid = t.get("txid")?.as_str()?;
+        if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let status = t.get("status")?;
+        let confirmed = status.get("confirmed")?.as_bool()?;
+        let inputs = t
+            .get("vin")?
+            .as_array()?
+            .iter()
+            .map(|i| {
+                if i.get("is_coinbase").and_then(serde_json::Value::as_bool) == Some(true) {
+                    Some(TxIo {
+                        address: None,
+                        sats: 0,
+                    })
+                } else {
+                    io(i.get("prevout")?)
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let outputs = t
+            .get("vout")?
+            .as_array()?
+            .iter()
+            .map(io)
+            .collect::<Option<Vec<_>>>()?;
+        Some(BtcTx {
+            txid: txid.to_owned(),
+            block_time: if confirmed {
+                Some(status.get("block_time")?.as_u64()?)
+            } else {
+                None
+            },
+            inputs,
+            outputs,
+            fee_sats: t
+                .get("fee")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+        })
+    }
+
+    /// Parse `GET /address/{a}/txs[/chain/{txid}]`: the transactions and the
+    /// number of entries that couldn't be read.
+    pub fn parse_txs(body: &str) -> Result<(Vec<BtcTx>, usize), EsploraError> {
+        let v: serde_json::Value =
+            serde_json::from_str(body).map_err(|_| EsploraError::Malformed)?;
+        let list = v.as_array().ok_or(EsploraError::Malformed)?;
+        let mut out = Vec::new();
+        let mut bad = 0;
+        for t in list {
+            match parse_tx(t) {
+                Some(tx) => out.push(tx),
+                None => bad += 1,
+            }
+        }
+        Ok((out, bad))
+    }
+
     /// `GET /blocks/tip/height` returns a bare integer.
     pub fn parse_tip_height(body: &str) -> Result<u64, EsploraError> {
         body.trim()
@@ -275,6 +379,27 @@ pub mod esplora {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_address_transactions() {
+        let body = r#"[
+          {"txid":"aa00000000000000000000000000000000000000000000000000000000000001",
+           "vin":[{"prevout":{"scriptpubkey_address":"bc1qother","value":150000},"is_coinbase":false}],
+           "vout":[{"scriptpubkey_address":"bc1qme","value":100000},{"scriptpubkey_address":"bc1qother2","value":49000},
+                   {"scriptpubkey_type":"op_return","value":0}],
+           "fee":1000,"status":{"confirmed":true,"block_height":1,"block_time":1700000000}},
+          {"txid":"aa00000000000000000000000000000000000000000000000000000000000002",
+           "vin":[],"vout":[],"status":{"confirmed":false}},
+          {"txid":"short","vin":[],"vout":[],"status":{"confirmed":false}}
+        ]"#;
+        let (txs, bad) = esplora::parse_txs(body).expect("txs");
+        assert_eq!((txs.len(), bad), (2, 1));
+        assert_eq!(txs[0].block_time, Some(1_700_000_000));
+        assert_eq!(txs[0].outputs[2].address, None, "OP_RETURN has no address");
+        assert_eq!(txs[0].fee_sats, 1000);
+        assert_eq!(txs[1].block_time, None);
+        assert!(esplora::parse_txs("{}").is_err());
+    }
 
     // Test vectors from BIP-84 (mnemonic "abandon … about", account 0).
     const ZPUB: &str = "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs";

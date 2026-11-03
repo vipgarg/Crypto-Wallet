@@ -100,6 +100,20 @@ impl FromStr for EthAddress {
     }
 }
 
+impl EthAddress {
+    /// Parse an address from provider data, in any letter case. Only for data
+    /// we display; user input always goes through the strict `FromStr`.
+    pub fn parse_any_case(s: &str) -> Option<Self> {
+        let body = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
+        if body.len() != 40 {
+            return None;
+        }
+        let mut bytes = [0u8; 20];
+        hex::decode_to_slice(body, &mut bytes).ok()?;
+        Some(Self(bytes))
+    }
+}
+
 impl fmt::Display for EthAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_checksum())
@@ -172,6 +186,8 @@ pub fn derive_address(account: &Xpub, index: u32) -> Result<EthAddress, DeriveEr
 
 /// Read-only JSON-RPC helpers. These build request bodies and parse results;
 /// the HTTP transport lives in `data-sources`.
+pub mod history;
+
 pub mod rpc {
     use super::EthAddress;
     use serde_json::{json, Value};

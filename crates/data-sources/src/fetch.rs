@@ -1,7 +1,8 @@
 //! Per-fact queries, asked of every provider for the network and cross-checked.
 
-use chain_btc::esplora::{self, AddressStats};
+use chain_btc::esplora::{self, AddressStats, BtcTx};
 use chain_btc::BtcAddress;
+use chain_eth::history::{self as eth_history, Erc20Transfer, EthTx, Page};
 use chain_eth::{rpc, EthAddress};
 use chain_tron::history::{self, Trc20Event, TronTx};
 use chain_tron::{api, TronAddress};
@@ -16,7 +17,8 @@ use thiserror::Error;
 use wallet_types::Network;
 
 use crate::config::{
-    NetworkConfig, ProviderConfig, ProviderKind, FEATURE_ACCOUNT_HISTORY, FEATURE_TRC20_HISTORY,
+    NetworkConfig, ProviderConfig, ProviderKind, FEATURE_ACCOUNT_HISTORY, FEATURE_ADDRESS_HISTORY,
+    FEATURE_ERC20_HISTORY, FEATURE_TRC20_HISTORY,
 };
 use crate::cross_check::{cross_check, CrossChecked};
 use crate::http::{HttpClient, HttpError};
@@ -117,6 +119,76 @@ pub async fn tron_transactions_from<H: HttpClient>(
     history::parse_transactions(&json).map_err(parse_err)
 }
 
+async fn get_json<H: HttpClient>(http: &H, url: &str) -> Result<serde_json::Value, FetchError> {
+    let body = http.get_text(url).await?;
+    serde_json::from_str(&body).map_err(parse_err)
+}
+
+/// One page of ERC-20 transfers from a Blockscout indexer.
+pub async fn eth_token_transfers_from<H: HttpClient>(
+    http: &H,
+    p: &ProviderConfig,
+    addr: &EthAddress,
+) -> Result<Page<Erc20Transfer>, FetchError> {
+    let json = get_json(
+        http,
+        &format!("{}{}", p.base_url, eth_history::token_transfers_path(addr)),
+    )
+    .await?;
+    eth_history::parse_token_transfers(&json).map_err(parse_err)
+}
+
+/// One page of the address's transactions from a Blockscout indexer.
+pub async fn eth_transactions_from<H: HttpClient>(
+    http: &H,
+    p: &ProviderConfig,
+    addr: &EthAddress,
+) -> Result<Page<EthTx>, FetchError> {
+    let json = get_json(
+        http,
+        &format!("{}{}", p.base_url, eth_history::transactions_path(addr)),
+    )
+    .await?;
+    eth_history::parse_transactions(&json).map_err(parse_err)
+}
+
+/// An address's transactions from one Esplora provider: up to `max_pages`
+/// pages (newest first). Returns the transactions, unreadable entries and
+/// whether older ones were left out.
+pub async fn btc_address_txs_from<H: HttpClient>(
+    http: &H,
+    p: &ProviderConfig,
+    addr: &BtcAddress,
+    max_pages: usize,
+) -> Result<(Vec<BtcTx>, usize, bool), FetchError> {
+    let a = addr.to_string();
+    let mut all: Vec<BtcTx> = Vec::new();
+    let mut unreadable = 0;
+    let mut path = esplora::txs_path(&a);
+    for page in 0..max_pages {
+        let body = http.get_text(&format!("{}{}", p.base_url, path)).await?;
+        let (txs, bad) = esplora::parse_txs(&body).map_err(parse_err)?;
+        unreadable += bad;
+        let confirmed: Vec<&BtcTx> = txs.iter().filter(|t| t.block_time.is_some()).collect();
+        let full = confirmed.len() >= esplora::TXS_PAGE;
+        let last = confirmed.last().map(|t| t.txid.clone());
+        all.extend(txs);
+        match (full, last) {
+            (true, Some(last)) if page + 1 < max_pages => path = esplora::txs_after_path(&a, &last),
+            (true, Some(_)) => return Ok((all, unreadable, true)),
+            _ => return Ok((all, unreadable, false)),
+        }
+    }
+    Ok((all, unreadable, false))
+}
+
+/// History fetched from one indexer (not cross-checked).
+#[derive(Debug, Clone)]
+pub struct FromOne<T> {
+    pub provider: String,
+    pub value: T,
+}
+
 /// Account transactions fetched from one provider.
 #[derive(Debug, Clone)]
 pub struct TronTransactions {
@@ -207,6 +279,8 @@ fn base_interval(kind: ProviderKind) -> Duration {
     match kind {
         ProviderKind::Esplora => Duration::from_millis(100),
         ProviderKind::EthJsonRpc | ProviderKind::TronHttp => Duration::from_millis(50),
+        // Free public indexer: be gentle.
+        ProviderKind::Blockscout => Duration::from_millis(250),
     }
 }
 
@@ -427,6 +501,87 @@ impl<'a, H: HttpClient> Sources<'a, H> {
         Err(errors.join("; "))
     }
 
+    /// Try each provider of `network` offering `feature`, in config order,
+    /// until one answers. Errors list every provider tried.
+    async fn first_answer<'s, T, F, Fut>(
+        &'s self,
+        network: Network,
+        feature: &'static str,
+        what: &str,
+        ask: F,
+    ) -> Result<FromOne<T>, String>
+    where
+        F: Fn(&'s ProviderConfig) -> Fut,
+        Fut: Future<Output = Result<T, FetchError>>,
+    {
+        let mut errors = Vec::new();
+        for p in self.config.with_feature(network, feature) {
+            if self.breaker.is_open(&p.id) {
+                errors.push(format!("{}: skipped after repeated failures", p.id));
+                continue;
+            }
+            self.pacer.wait(p).await;
+            let r = ask(p).await;
+            self.breaker.record(&p.id, r.is_ok());
+            match r {
+                Ok(value) => {
+                    return Ok(FromOne {
+                        provider: p.id.clone(),
+                        value,
+                    })
+                }
+                Err(e) => errors.push(format!("{}: {e}", p.id)),
+            }
+        }
+        if errors.is_empty() {
+            errors.push(format!("no configured provider offers {what}"));
+        }
+        Err(errors.join("; "))
+    }
+
+    /// ERC-20 transfers (newest page) from the first indexer that answers.
+    pub async fn eth_token_transfers(
+        &self,
+        addr: &EthAddress,
+    ) -> Result<FromOne<Page<Erc20Transfer>>, String> {
+        self.first_answer(
+            Network::Ethereum,
+            FEATURE_ERC20_HISTORY,
+            "Ethereum token history",
+            |p| eth_token_transfers_from(self.http, p, addr),
+        )
+        .await
+    }
+
+    /// The address's transactions (newest page) from the first indexer that answers.
+    pub async fn eth_transactions(
+        &self,
+        addr: &EthAddress,
+    ) -> Result<FromOne<Page<EthTx>>, String> {
+        self.first_answer(
+            Network::Ethereum,
+            FEATURE_ACCOUNT_HISTORY,
+            "Ethereum transaction history",
+            |p| eth_transactions_from(self.http, p, addr),
+        )
+        .await
+    }
+
+    /// One Bitcoin address's transactions from the first provider that answers.
+    pub async fn btc_address_txs(
+        &self,
+        addr: &BtcAddress,
+        max_pages: usize,
+    ) -> Result<FromOne<(Vec<BtcTx>, usize, bool)>, String> {
+        self.first_answer(
+            Network::Bitcoin,
+            FEATURE_ADDRESS_HISTORY,
+            "Bitcoin history",
+            |p| btc_address_txs_from(self.http, p, addr, max_pages),
+        )
+        .await
+    }
+
     /// Latest Ethereum block time from every Ethereum provider (for the PC
     /// clock check). Providers that fail are left out.
     pub async fn eth_block_times(&self) -> Vec<(String, u64)> {
@@ -602,6 +757,57 @@ mod tests {
         let r = s.btc_address(&addr).await;
         assert!(r.is_verified(), "{r:?}");
         assert_eq!(r.value().map(|f| f.confirmed_sats), Some(5000));
+        // Only individual addresses are requested, never an xpub.
+        assert!(http.requested().iter().all(|u| !u.contains("pub")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn btc_history_pages_and_falls_back() {
+        let config = NetworkConfig::embedded().expect("config");
+        let addr: BtcAddress = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+            .parse()
+            .expect("addr");
+        let tx = |n: usize| {
+            format!(
+                r#"{{"txid":"{n:064x}","vin":[],"vout":[{{"scriptpubkey_address":"{addr}","value":1000}}],"fee":0,"status":{{"confirmed":true,"block_time":{}}}}}"#,
+                1_700_000_000 - n
+            )
+        };
+        let page = |range: std::ops::Range<usize>| {
+            format!("[{}]", range.map(tx).collect::<Vec<_>>().join(","))
+        };
+        let ps: Vec<_> = config
+            .with_feature(Network::Bitcoin, FEATURE_ADDRESS_HISTORY)
+            .collect();
+        assert!(ps.len() >= 2);
+        let mut http = MockHttp::default();
+        // The first history provider doesn't answer; the second has 28 txs.
+        let second = ps[1];
+        http.on_get(
+            &format!(
+                "{}{}",
+                second.base_url,
+                esplora::txs_path(&addr.to_string())
+            ),
+            &page(0..25),
+        );
+        http.on_get(
+            &format!(
+                "{}{}",
+                second.base_url,
+                esplora::txs_after_path(&addr.to_string(), &format!("{:064x}", 24))
+            ),
+            &page(25..28),
+        );
+        let s = Sources::new(&http, &config);
+        let r = s.btc_address_txs(&addr, 4).await.expect("history");
+        assert_eq!(r.provider, second.id);
+        let (txs, bad, more) = r.value;
+        assert_eq!((txs.len(), bad, more), (28, 0, false));
+
+        // With a 1-page limit, "more" says older ones were left out.
+        let r = s.btc_address_txs(&addr, 1).await.expect("history");
+        assert_eq!((r.value.0.len(), r.value.2), (25, true));
         // Only individual addresses are requested, never an xpub.
         assert!(http.requested().iter().all(|u| !u.contains("pub")));
     }

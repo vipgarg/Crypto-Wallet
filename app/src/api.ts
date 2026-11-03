@@ -144,7 +144,9 @@ export type Direction = "in" | "out" | "self_transfer" | "not_involved";
 
 export type Flag =
   | { kind: "zero_value" }
-  | { kind: "dust" }
+  | { kind: "dust"; below: string }
+  | { kind: "btc_dust"; below: string }
+  | { kind: "unconfirmed" }
   | { kind: "look_alike"; similar_to: string; similar_to_label: string }
   | { kind: "fake_token" }
   | { kind: "unknown_token" }
@@ -188,8 +190,11 @@ export interface ActivityEntry {
   hidden: boolean;
 }
 
+export type HistoryNetwork = "tron" | "ethereum" | "bitcoin";
+
 export interface WalletActivity {
   wallet_id: string;
+  network: HistoryNetwork;
   address: string;
   source: string;
   entries: ActivityEntry[];
@@ -258,7 +263,8 @@ export const api = {
   getPortfolio: () => call<Portfolio>("get_portfolio"),
   appInfo: () => call<AppInfo>("app_info"),
   getProgress: () => call<Progress>("get_progress"),
-  getActivity: (id: string) => call<WalletActivity>("get_activity", { id }),
+  getActivity: (id: string, network: HistoryNetwork) =>
+    call<WalletActivity>("get_activity", { id, network }),
   authStatus: () => call<AuthStatus>("auth_status"),
   setupBegin: () => call<SetupInfo>("setup_begin"),
   setupFinish: (password: string, code: string) => call<void>("setup_finish", { password, code }),

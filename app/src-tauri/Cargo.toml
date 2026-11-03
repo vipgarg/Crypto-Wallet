@@ -29,6 +29,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 wallet-core = { path = "../../crates/wallet-core" }
 wallet-types = { path = "../../crates/wallet-types" }
 chain-btc = { path = "../../crates/chain-btc" }
+chain-eth = { path = "../../crates/chain-eth" }
 
 [lints]
 workspace = true

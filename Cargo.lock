@@ -4925,6 +4925,7 @@ dependencies = [
  "audit-log",
  "auth",
  "chain-btc",
+ "chain-eth",
  "data-sources",
  "futures-util",
  "qrcode",

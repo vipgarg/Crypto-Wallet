@@ -14,6 +14,7 @@ import {
   type ActivityEntry,
   type Flag,
   type WalletActivity,
+  type HistoryNetwork,
   type TxEntry,
   type Tier,
   type WalletView,
@@ -417,7 +418,7 @@ function AboutPage() {
 const DIRECTION_TEXT: Record<ActivityEntry["direction"], string> = {
   in: "↓ Received",
   out: "↑ Sent",
-  self_transfer: "↺ To itself",
+  self_transfer: "↺ Between own addresses",
   not_involved: "· Not involved",
 };
 
@@ -426,7 +427,11 @@ function flagText(f: Flag): string {
     case "zero_value":
       return "0-value transfer (poisoning trick)";
     case "dust":
-      return "Dust (under 1 USDT)";
+      return `Dust (under ${f.below}): typical of poisoning`;
+    case "btc_dust":
+      return `Dust (under ${f.below}): may be a tracking attempt. Don't spend it together with your other coins`;
+    case "unconfirmed":
+      return "Not confirmed yet";
     case "look_alike":
       return `Looks like ${f.similar_to_label}: ${f.similar_to}`;
     case "fake_token":
@@ -460,18 +465,24 @@ function Addr({ a }: { a: string }) {
   );
 }
 
+const SEVERE: Flag["kind"][] = ["approval", "spent_by_other", "permission_change", "look_alike"];
+
 function EntryRow({ e }: { e: ActivityEntry }) {
-  const severe = e.flags.some((f) => f.kind === "approval" || f.kind === "look_alike");
+  const severe = e.flags.some((f) => SEVERE.includes(f.kind));
   return (
     <tr className={severe ? "row-warn" : ""}>
-      <td>{new Date(e.time_ms).toLocaleString()}</td>
+      <td>{e.time_ms > 0 ? new Date(e.time_ms).toLocaleString() : "Pending"}</td>
       <td>{e.is_approval ? "⚠ Approval" : DIRECTION_TEXT[e.direction]}</td>
       <td>
         <div className="amount-small">{e.amount ?? "unlimited / unknown"}</div>
         <div className="asset-label">{e.token_label}</div>
       </td>
       <td>
-        <Addr a={e.counterparty} />
+        {e.counterparty.startsWith("(") ? (
+          <span className="muted">{e.counterparty}</span>
+        ) : (
+          <Addr a={e.counterparty} />
+        )}
       </td>
       <td>
         {e.flags.map((f, i) => (
@@ -504,8 +515,6 @@ function EntryTable({ entries }: { entries: ActivityEntry[] }) {
     </table>
   );
 }
-
-const SEVERE: Flag["kind"][] = ["approval", "spent_by_other", "permission_change", "look_alike"];
 
 function TxRow({ e }: { e: TxEntry }) {
   const severe = e.flags.some((f) => SEVERE.includes(f.kind));
@@ -553,24 +562,70 @@ function TxTable({ entries }: { entries: TxEntry[] }) {
   );
 }
 
+const HISTORY_NETWORKS: {
+  id: HistoryNetwork;
+  label: string;
+  has: (w: WalletView) => boolean;
+  transfersTab: string;
+  transfersHint: string;
+  transactionsHint: string;
+  scope: string;
+}[] = [
+  {
+    id: "tron",
+    label: "TRON",
+    has: (w) => !!w.tron,
+    transfersTab: "Transfers (USDT)",
+    transfersHint: "Token movements of genuine USDT (TRC-20) to or from this wallet.",
+    transactionsHint:
+      "Everything this account did on-chain: TRX transfers, contract calls (USDT transfers and approvals), permission changes, staking and voting.",
+    scope: "Latest 50 USDT transfers and latest 50 transactions, like Tronscan's two tabs.",
+  },
+  {
+    id: "ethereum",
+    label: "Ethereum",
+    has: (w) => !!w.eth,
+    transfersTab: "Token transfers (USDT)",
+    transfersHint:
+      "Movements of genuine USDT (ERC-20) to or from this wallet. Other tokens are hidden: anyone can create a token called \"USDT\".",
+    transactionsHint:
+      "Transactions this address sent or received: ETH transfers and contract calls such as USDT transfers and approvals.",
+    scope: "Latest 50 token transfers and latest 50 transactions, like Etherscan's tabs.",
+  },
+  {
+    id: "bitcoin",
+    label: "Bitcoin",
+    has: (w) => !!w.btc,
+    transfersTab: "Transactions (BTC)",
+    transfersHint:
+      "Every transaction touching this wallet's addresses. Amounts sent include the network fee. \"Between own addresses\" shows only the fee.",
+    transactionsHint: "",
+    scope:
+      "All used addresses of the account are checked one by one (this can take a minute), up to 100 transactions per address.",
+  },
+];
+
 function ActivityPage() {
   const [tab, setTab] = useState<"transfers" | "transactions">("transfers");
-  const [wallets, setWallets] = useState<WalletView[]>([]);
+  const [network, setNetwork] = useState<HistoryNetwork>("tron");
+  const [allWallets, setAllWallets] = useState<WalletView[]>([]);
   const [selected, setSelected] = useState("");
   const [data, setData] = useState<WalletActivity | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const net = HISTORY_NETWORKS.find((n) => n.id === network) ?? HISTORY_NETWORKS[0];
+  const wallets = allWallets.filter(net.has);
 
   useEffect(() => {
-    api.listWallets().then(
-      (ws) => {
-        const tron = ws.filter((w) => w.tron);
-        setWallets(tron);
-        if (tron.length > 0) setSelected(tron[0].id);
-      },
-      (e) => setError(errorText(e)),
-    );
+    api.listWallets().then(setAllWallets, (e) => setError(errorText(e)));
   }, []);
+
+  // Pick the first wallet of the chosen network; clear old results.
+  useEffect(() => {
+    setSelected(wallets[0]?.id ?? "");
+    setData(null);
+    setTab("transfers");
+  }, [network, allWallets]);
 
   const load = async () => {
     if (!selected) return;
@@ -578,7 +633,7 @@ function ActivityPage() {
     setError(null);
     setData(null);
     try {
-      setData(await api.getActivity(selected));
+      setData(await api.getActivity(selected, network));
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -590,6 +645,7 @@ function ActivityPage() {
   const hidden = data?.entries.filter((e) => e.hidden) ?? [];
   const txVisible = data?.transactions?.entries.filter((e) => !e.hidden) ?? [];
   const txHidden = data?.transactions?.entries.filter((e) => e.hidden) ?? [];
+  const hasTxTab = network !== "bitcoin";
 
   return (
     <section>
@@ -598,11 +654,15 @@ function ActivityPage() {
         Never copy a recipient address from transaction history. Scammers send tiny or 0-value transfers from
         addresses that look like ones you use. Always take addresses from your verified address book.
       </p>
-      <p className="hint">
-        Latest 50 USDT transfers and latest 50 transactions per TRON wallet, like Tronscan's two tabs. Ethereum and
-        Bitcoin history come next.
-      </p>
-      {wallets.length === 0 && !error && <p>No wallet with a TRON address yet.</p>}
+      <div className="tabs">
+        {HISTORY_NETWORKS.map((n) => (
+          <button key={n.id} className={network === n.id ? "active" : ""} onClick={() => setNetwork(n.id)}>
+            {n.label}
+          </button>
+        ))}
+      </div>
+      <p className="hint">{net.scope}</p>
+      {wallets.length === 0 && !error && <p>No wallet with a {net.label} address yet.</p>}
       {wallets.length > 0 && (
         <div className="toolbar">
           <select value={selected} onChange={(e) => setSelected(e.target.value)}>
@@ -617,9 +677,15 @@ function ActivityPage() {
           </button>
         </div>
       )}
+      {loading && network === "bitcoin" && (
+        <p className="hint">Checking each used Bitcoin address… this can take up to a minute or two.</p>
+      )}
       {error && <p className="error">{error}</p>}
-      {data && (
+      {data && data.network === network && (
         <>
+          <p className="hint">
+            {data.address} · Source: {data.source}
+          </p>
           {data.permission_changes > 0 && (
             <p className="error">
               ⚠ {data.permission_changes} account permission change(s) found. On TRON this is how attackers take over
@@ -634,8 +700,8 @@ function ActivityPage() {
           )}
           {data.lookalike_count > 0 && (
             <p className="warning">
-              {data.lookalike_count} transfer(s) involve an address that looks like one you use but is different. These
-              are typical of address poisoning.
+              {data.lookalike_count} entr{data.lookalike_count === 1 ? "y involves" : "ies involve"} an address that
+              looks like one you use but is different. These are typical of address poisoning.
             </p>
           )}
           {data.notes.map((n, i) => (
@@ -645,40 +711,41 @@ function ActivityPage() {
           ))}
           <div className="tabs">
             <button className={tab === "transfers" ? "active" : ""} onClick={() => setTab("transfers")}>
-              Transfers (USDT) · {visible.length}
+              {net.transfersTab} · {visible.length}
             </button>
-            <button className={tab === "transactions" ? "active" : ""} onClick={() => setTab("transactions")}>
-              Transactions (all) · {txVisible.length}
-            </button>
+            {hasTxTab && (
+              <button className={tab === "transactions" ? "active" : ""} onClick={() => setTab("transactions")}>
+                Transactions (all) · {txVisible.length}
+              </button>
+            )}
           </div>
           {tab === "transfers" && (
             <>
               <div className="card">
-                <p className="hint">Token movements of genuine USDT (TRC-20) to or from this wallet.</p>
+                <p className="hint">{net.transfersHint}</p>
                 {visible.length === 0 ? (
-                  <p className="muted">No regular USDT transfers in the latest entries.</p>
+                  <p className="muted">Nothing to show in the latest entries.</p>
                 ) : (
                   <EntryTable entries={visible} />
                 )}
               </div>
               {hidden.length > 0 && (
                 <details className="card">
-                  <summary>Hidden: {hidden.length} suspicious, dust or unknown-token transfers</summary>
+                  <summary>Hidden: {hidden.length} suspicious, dust or unknown-token entries</summary>
                   <p className="error">These are hidden on purpose. Do not copy any address from this list.</p>
                   <EntryTable entries={hidden} />
                 </details>
               )}
             </>
           )}
-          {tab === "transactions" && (
+          {tab === "transactions" && hasTxTab && (
             <>
               {data.transactions_error && <p className="error">{data.transactions_error}</p>}
               {data.transactions && (
                 <>
                   <div className="card">
                     <p className="hint">
-                      Everything this account did on-chain: TRX transfers, contract calls (USDT transfers and approvals),
-                      permission changes, staking and voting. Source: {data.transactions.source}.
+                      {net.transactionsHint} Source: {data.transactions.source}.
                     </p>
                     {txVisible.length === 0 ? (
                       <p className="muted">No transactions in the latest entries.</p>
