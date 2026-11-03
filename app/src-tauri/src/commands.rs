@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chain_btc::BtcAddress;
+use chain_btc::{BtcAddress, Chain};
 use data_sources::fetch::Sources;
 use data_sources::{NetworkConfig, ReqwestClient};
 use serde::Serialize;
@@ -22,8 +22,8 @@ use wallet_core::activity::{
     transactions_view, KnownAddress, WalletActivity,
 };
 use wallet_core::{
-    build_portfolio, BtcWatch, NewWalletInput, Portfolio, ProgressLevel, ProgressSink, Registry,
-    WatchWallet,
+    build_portfolio, from_signer_export, BtcWatch, NewWalletInput, Portfolio, ProgressLevel,
+    ProgressSink, Registry, WatchWallet,
 };
 use wallet_types::Tier;
 use zeroize::Zeroizing;
@@ -137,6 +137,8 @@ pub struct WalletView {
     btc: Option<BtcView>,
     eth: Option<String>,
     tron: Option<String>,
+    /// Set when the wallet was imported from the signer tablet.
+    signer_fingerprint: Option<String>,
 }
 
 impl From<&WatchWallet> for WalletView {
@@ -156,6 +158,7 @@ impl From<&WatchWallet> for WalletView {
             }),
             eth: w.eth.map(|a| a.to_checksum()),
             tron: w.tron.map(|a| a.to_base58()),
+            signer_fingerprint: w.signer_fingerprint.clone(),
         }
     }
 }
@@ -182,6 +185,72 @@ pub fn add_wallet(
     input: NewWalletInput,
 ) -> Result<Vec<WalletView>, String> {
     let wallet = input.validate().map_err(|e| e.to_string())?;
+    state.session.with_registry(true, true, |r| {
+        r.add(wallet).map_err(|e| e.to_string())?;
+        Ok(views(r))
+    })
+}
+
+/// What the PC read from the tablet's export QR, shown for the user to
+/// compare with the tablet screen before adding.
+#[derive(Debug, Serialize)]
+pub struct SignerWalletPreview {
+    id: String,
+    label: String,
+    tier_name: &'static str,
+    fingerprint: String,
+    /// Bitcoin receive address #0, derived on this PC from the account key.
+    btc_first_address: String,
+    eth: String,
+    tron: String,
+    /// Why it can't be added (e.g. already watched), if anything.
+    problem: Option<String>,
+}
+
+fn preview_of(w: &WatchWallet, problem: Option<String>) -> Result<SignerWalletPreview, String> {
+    let first = match &w.btc {
+        Some(BtcWatch::AccountXpub(x)) => {
+            x.0.derive_address(Chain::Receive, 0)
+                .map(|a| a.to_string())
+                .map_err(|e| e.to_string())?
+        }
+        _ => return Err("The export has no Bitcoin account key.".into()),
+    };
+    Ok(SignerWalletPreview {
+        id: w.id.to_string(),
+        label: w.label.clone(),
+        tier_name: w.tier.display_name(),
+        fingerprint: w.signer_fingerprint.clone().unwrap_or_default(),
+        btc_first_address: first,
+        eth: w.eth.map(|a| a.to_checksum()).unwrap_or_default(),
+        tron: w.tron.map(|a| a.to_base58()).unwrap_or_default(),
+        problem,
+    })
+}
+
+/// Step 1 of "Add from tablet": check the scanned (or pasted) export and
+/// show what it contains. Nothing is saved.
+#[tauri::command]
+pub fn preview_signer_wallet(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<SignerWalletPreview, String> {
+    let wallet = from_signer_export(&text).map_err(|e| e.to_string())?;
+    let problem = state.session.with_registry(true, false, |r| {
+        let mut trial = r.clone();
+        Ok(trial.add(wallet.clone()).err().map(|e| e.to_string()))
+    })?;
+    preview_of(&wallet, problem)
+}
+
+/// Step 2: the user compared the preview with the tablet and confirmed. The
+/// export is checked again from scratch (nothing is trusted from step 1).
+#[tauri::command]
+pub fn add_signer_wallet(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<Vec<WalletView>, String> {
+    let wallet = from_signer_export(&text).map_err(|e| e.to_string())?;
     state.session.with_registry(true, true, |r| {
         r.add(wallet).map_err(|e| e.to_string())?;
         Ok(views(r))
@@ -575,6 +644,25 @@ pub async fn startup_checks(state: State<'_, AppState>) -> Result<Vec<sys_checks
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn signer_preview_matches_the_tablet() {
+        // Export made by the tablet code from the public test phrase.
+        let text = r#"WWX1:{"id":"test-01","label":"Test spending","tier":"spending","fingerprint":"73c5da0a","btc_zpub":"zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs","eth":"0x9858EfFD232B4033E47d90003D41EC34EcaEda94","tron":"TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"}#55971832"#;
+        let w = from_signer_export(text).expect("import");
+        let p = preview_of(&w, None).expect("preview");
+        // The tablet's "verify" screen shows the same address #0 (BIP-84 vector).
+        assert_eq!(
+            p.btc_first_address,
+            "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+        );
+        assert_eq!(p.fingerprint, "73c5da0a");
+        assert_eq!(p.tier_name, Tier::Spending.display_name());
+        let view = WalletView::from(&w);
+        assert_eq!(view.signer_fingerprint.as_deref(), Some("73c5da0a"));
+    }
+
     /// CI guard (§9.1): every `#[tauri::command]` must be on the reviewed list
     /// in build.rs, in the capability file and in the isolation script.
     #[test]
@@ -617,7 +705,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            14,
+            16,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

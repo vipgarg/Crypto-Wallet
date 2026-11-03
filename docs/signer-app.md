@@ -38,7 +38,7 @@ Design references: ARCHITECTURE-MOBILE.md §2, §4, §5.1a; ARCHITECTURE.md §6,
 5. Verify address: show the BTC receive address #n, or the ETH/TRON address, for comparison with the PC Receive page.
 6. Restore wallet from words (recovery test).
 
-**Also needed on the PC side:** "Add wallet from signer": scan the export QR with the PC webcam (or paste the export text), validated by the same rules as `export::decode`.
+**PC side (built):** Wallets page → "Add a wallet from the signer tablet". The webcam reads the export QR (jsQR, in the app window); the text goes to Rust, which decodes it with the same shared code as the tablet (`crates/watch-export`) and re-checks every field. The PC then shows the fingerprint, Bitcoin receive address #0 (derived on the PC), Ethereum and TRON addresses; the user compares them with the tablet screen and ticks a box before **Add this wallet** is enabled. The add step checks the export again from scratch. Imported wallets are marked "From the signer tablet · fingerprint …". The camera runs only while the scan panel is open.
 
 ## First Android build (testnet) — what's in it
 

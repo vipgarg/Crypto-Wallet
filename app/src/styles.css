@@ -190,3 +190,11 @@ button.lock-btn { margin-left: 12px; background: transparent; color: var(--text)
 /* Tauri's isolation-pattern frame (ARCHITECTURE.md §9.1). It must stay in the
    page to filter IPC, but it has no visible content. */
 iframe#__tauri_isolation__ { display: none; }
+
+/* Add from signer tablet */
+.scanner-video { display: block; width: 100%; max-width: 560px; border-radius: 8px; background: #000; margin: 8px 0; }
+.form textarea { width: 100%; box-sizing: border-box; font-family: var(--mono); padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
+.form label.confirm { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; }
+.form label.confirm input { width: auto; margin-top: 3px; }
+.button-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.signer-preview dd { margin-left: 0; }

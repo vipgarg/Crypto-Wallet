@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-add-signer-wallet"
+description = "Enables the add_signer_wallet command without any pre-configured scope."
+commands.allow = ["add_signer_wallet"]
+
+[[permission]]
+identifier = "deny-add-signer-wallet"
+description = "Denies the add_signer_wallet command without any pre-configured scope."
+commands.deny = ["add_signer_wallet"]

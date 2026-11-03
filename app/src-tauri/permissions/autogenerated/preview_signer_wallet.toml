@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preview-signer-wallet"
+description = "Enables the preview_signer_wallet command without any pre-configured scope."
+commands.allow = ["preview_signer_wallet"]
+
+[[permission]]
+identifier = "deny-preview-signer-wallet"
+description = "Denies the preview_signer_wallet command without any pre-configured scope."
+commands.deny = ["preview_signer_wallet"]

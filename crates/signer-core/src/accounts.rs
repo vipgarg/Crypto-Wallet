@@ -8,9 +8,6 @@
 use bitcoin::bip32::{DerivationPath, Xpriv, Xpub};
 use bitcoin::secp256k1::Secp256k1;
 use chain_btc::{AccountXpub, Chain};
-use chain_eth::EthAddress;
-use chain_tron::TronAddress;
-use serde::{Deserialize, Serialize};
 
 use crate::seed::{SeedError, SeedMaterial};
 
@@ -21,15 +18,7 @@ pub const TRON_ACCOUNT_PATH: &str = "m/44'/195'/0'";
 /// SLIP-132 version bytes for a mainnet P2WPKH account key ("zpub").
 const ZPUB_VERSION: [u8; 4] = [0x04, 0xb2, 0x47, 0x46];
 
-/// Everything the PC needs to watch a wallet. Public data only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WalletPublic {
-    /// Master fingerprint (seed + passphrase), 8 hex characters.
-    pub fingerprint: String,
-    pub btc_zpub: String,
-    pub eth: String,
-    pub tron: String,
-}
+pub use watch_export::{validate, WalletPublic};
 
 fn account_xpub(master: &Xpriv, path: &str) -> Result<Xpub, SeedError> {
     let secp = Secp256k1::new();
@@ -70,15 +59,6 @@ pub fn btc_receive_address(public: &WalletPublic, index: u32) -> Result<String, 
     acct.derive_address(Chain::Receive, index)
         .map(|a| a.to_string())
         .map_err(|_| SeedError::Derivation)
-}
-
-/// Re-validate the stored addresses (catches a corrupted record).
-pub fn validate(public: &WalletPublic) -> bool {
-    public.btc_zpub.parse::<AccountXpub>().is_ok()
-        && public.eth.parse::<EthAddress>().is_ok()
-        && public.tron.parse::<TronAddress>().is_ok()
-        && public.fingerprint.len() == 8
-        && public.fingerprint.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 #[cfg(test)]

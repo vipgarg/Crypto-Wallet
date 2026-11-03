@@ -9,6 +9,7 @@ members = [
     "crates/wallet-core",
     "crates/auth",
     "crates/sys-checks",
+    "crates/watch-export",
     "crates/signer-core",
     "crates/signer-ffi",
     "app/src-tauri",

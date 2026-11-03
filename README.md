@@ -11,7 +11,7 @@ A personal self-custody wallet, built in phases. This repository currently conta
 
 | Feature | Detail |
 |---|---|
-| Wallets | Add wallets by **public data only**: a BIP-84 `zpub`/`xpub` (or one address) for Bitcoin, an Ethereum address, a TRON address. Seed phrases, private keys and `xprv` are refused. |
+| Wallets | **Add from the signer tablet**: scan its export QR with the PC webcam (or paste the export text). The PC checks the export again, shows the fingerprint, Bitcoin address #0, Ethereum and TRON addresses to compare with the tablet screen, and adds the wallet only after you confirm they match. The camera is on only while the scan panel is open. Or add by hand with **public data only**: a BIP-84 `zpub`/`xpub` (or one address) for Bitcoin, an Ethereum address, a TRON address. Seed phrases, private keys and `xprv` are refused. |
 | Balances | BTC; USDT on Ethereum (ERC-20) and ETH for fees; USDT on TRON (TRC-20) and TRX for fees. |
 | Cross-checking | Every balance is asked of **2 independent providers per network**. Identical answers = *Verified*. One answer = *Unverified*. Different answers = *Sources disagree* (no value shown, no majority vote). Totals only add verified balances. |
 | Pinned contracts | USDT contract addresses are compiled in (`config/networks.v1.toml`); the app shows the config's SHA-256 on the About page. |
@@ -19,7 +19,7 @@ A personal self-custody wallet, built in phases. This repository currently conta
 | Receive | QR code and address (even groups of 4, first and last 6 characters in bold) with a clear network banner. Bitcoin gives a fresh, never-used address each time (checked with both providers; fails closed if they can't confirm), with a "New address" button. Copy clears the clipboard after 60 s. A "verify on the signer" step explains what to compare on the tablet. |
 | Login | First run: choose a password and link an authenticator app (QR code). Every start: password + 6-digit code. The wallet list is encrypted on disk (Argon2id + XChaCha20-Poly1305). Increasing delays on wrong attempts, 30-minute lock after 5. Auto-lock after 5 minutes idle, and a Lock button. |
 | PC safety checks | Shown on the login screen and the Checks page: Windows Defender, Windows updates, admin account, remote-access tools / Remote Desktop, proxy, PC clock vs blockchain time, app file fingerprint, config hash. They catch mistakes and simple malware; admin-level malware can fake them. |
-| Security boundary | Tauri 2 with a strict Content-Security-Policy, the isolation pattern, a capability file allowing exactly 5 commands, navigation locked to the app, no plugins (no shell/fs/http/updater). |
+| Security boundary | Tauri 2 with a strict Content-Security-Policy, the isolation pattern, a capability file allowing exactly the 16 reviewed commands, navigation locked to the app, no plugins (no shell/fs/http/updater). |
 
 **Also built:** TRON activity (transfers and transactions) with address-poisoning detection.
 
@@ -35,6 +35,7 @@ crates/
   chain-tron/     Base58Check addresses (0x41), derivation, read-only /wallet API encoding/parsing
   data-sources/   compiled-in network config, HTTPS client, cross-checking (no majority vote)
   wallet-core/    watch-only wallet registry (atomic saves) and the portfolio
+  watch-export/   the tablet's watch-only export format (shared; no seed code)
 app/
   src/            React + TypeScript UI
   isolation/      Tauri isolation script (second command allowlist)

@@ -17,6 +17,8 @@ const COMMANDS: &[&str] = &[
     "lock",
     "startup_checks",
     "get_receive",
+    "preview_signer_wallet",
+    "add_signer_wallet",
 ];
 
 fn main() {

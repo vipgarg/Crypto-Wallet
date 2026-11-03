@@ -10,4 +10,6 @@ pub use portfolio::{
     build_portfolio, AssetBalance, AssetTotal, BalanceStatus, NoProgress, Portfolio, ProgressLevel,
     ProgressSink, WalletPortfolio,
 };
-pub use registry::{BtcWatch, NewWalletInput, Registry, RegistryError, WatchWallet};
+pub use registry::{
+    from_signer_export, BtcWatch, NewWalletInput, Registry, RegistryError, WatchWallet,
+};

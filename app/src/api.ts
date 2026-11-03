@@ -52,6 +52,20 @@ export interface WalletView {
   btc: BtcView | null;
   eth: string | null;
   tron: string | null;
+  /** Set when the wallet was imported from the signer tablet. */
+  signer_fingerprint: string | null;
+}
+
+export interface SignerWalletPreview {
+  id: string;
+  label: string;
+  tier_name: string;
+  fingerprint: string;
+  btc_first_address: string;
+  eth: string;
+  tron: string;
+  /** Why it can't be added (e.g. already watched), if anything. */
+  problem: string | null;
 }
 
 export interface NewWalletInput {
@@ -222,6 +236,8 @@ export const api = {
   startupChecks: () => call<SystemCheck[]>("startup_checks"),
   getReceive: (id: string, network: ReceiveNetwork, skip: number) =>
     call<ReceiveView>("get_receive", { id, network, skip }),
+  previewSignerWallet: (text: string) => call<SignerWalletPreview>("preview_signer_wallet", { text }),
+  addSignerWallet: (text: string) => call<WalletView[]>("add_signer_wallet", { text }),
 };
 
 export function errorText(e: unknown): string {

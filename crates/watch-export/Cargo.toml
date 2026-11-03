@@ -1,0 +1,22 @@
+[package]
+name = "watch-export"
+version = "0.1.0"
+description = "The watch-only export format the signer tablet shows as a QR code and the PC app imports. Public data only; no seed code."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chain-btc = { path = "../chain-btc" }
+chain-eth = { path = "../chain-eth" }
+chain-tron = { path = "../chain-tron" }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+wallet-types = { path = "../wallet-types" }
+
+[lints]
+workspace = true

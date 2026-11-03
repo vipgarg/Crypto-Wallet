@@ -48,6 +48,10 @@ pub struct WatchWallet {
     pub eth: Option<EthAddress>,
     #[serde(default)]
     pub tron: Option<TronAddress>,
+    /// Master fingerprint (8 hex characters) when the wallet was imported
+    /// from the signer tablet's export QR. `None` for wallets typed by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_fingerprint: Option<String>,
 }
 
 /// What the UI sends when adding a wallet. Every field is re-validated here.
@@ -93,6 +97,8 @@ pub enum RegistryError {
     Io(String),
     #[error("wallet file is corrupted or from an unknown version")]
     Corrupt,
+    #[error("{0}")]
+    Export(String),
 }
 
 /// Rough check for pasted secrets: many words (a mnemonic), a 64-hex private
@@ -177,8 +183,32 @@ impl NewWalletInput {
             btc,
             eth,
             tron,
+            signer_fingerprint: None,
         })
     }
+}
+
+/// A wallet from the signer tablet's watch-only export (the `WWX1:` text in
+/// its QR code). The export's checksum and every field are checked again
+/// here; the result has the BIP-84 account key and both addresses.
+pub fn from_signer_export(text: &str) -> Result<WatchWallet, RegistryError> {
+    // A pasted seed phrase or key gets the strong warning, not "not an export".
+    // (A real export starts with the prefix; its label may contain spaces.)
+    if !text.trim().starts_with(watch_export::PREFIX) && looks_like_secret(text) {
+        return Err(RegistryError::SecretRejected);
+    }
+    let e = watch_export::decode(text).map_err(|e| RegistryError::Export(e.to_string()))?;
+    let bad = |what: &str| RegistryError::Export(format!("the export's {what} is invalid"));
+    let xpub: AccountXpub = e.public.btc_zpub.parse().map_err(|_| bad("Bitcoin key"))?;
+    Ok(WatchWallet {
+        id: e.id,
+        label: e.label,
+        tier: e.tier,
+        btc: Some(BtcWatch::AccountXpub(AccountXpubSer(xpub))),
+        eth: Some(e.public.eth.parse().map_err(|_| bad("Ethereum address"))?),
+        tron: Some(e.public.tron.parse().map_err(|_| bad("TRON address"))?),
+        signer_fingerprint: Some(e.public.fingerprint),
+    })
 }
 
 /// Wrong-network detection (§7 ②): explain when an address belongs elsewhere.
@@ -322,6 +352,57 @@ mod tests {
         assert!(matches!(
             r.add(input("savings-02").validate().expect("v")),
             Err(RegistryError::DuplicateAddress(..))
+        ));
+    }
+
+    /// Made by the tablet code from the public test phrase "abandon … about".
+    const EXPORT: &str = r#"WWX1:{"id":"test-01","label":"Test spending","tier":"spending","fingerprint":"73c5da0a","btc_zpub":"zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs","eth":"0x9858EfFD232B4033E47d90003D41EC34EcaEda94","tron":"TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"}#55971832"#;
+
+    #[test]
+    fn imports_a_signer_export() {
+        let w = from_signer_export(EXPORT).expect("import");
+        assert_eq!(w.id.as_str(), "test-01");
+        assert_eq!(w.tier, Tier::Spending);
+        assert_eq!(w.signer_fingerprint.as_deref(), Some("73c5da0a"));
+        assert_eq!(
+            w.eth.map(|a| a.to_checksum()).as_deref(),
+            Some("0x9858EfFD232B4033E47d90003D41EC34EcaEda94")
+        );
+        assert!(matches!(w.btc, Some(BtcWatch::AccountXpub(_))));
+        let mut r = Registry::empty();
+        r.add(w.clone()).expect("add");
+        // The same wallet again is refused.
+        assert!(matches!(r.add(w), Err(RegistryError::DuplicateId(_))));
+
+        // Survives a save/load round trip; old files without the field load too.
+        let json = serde_json::to_string(&r).expect("json");
+        assert!(json.contains("signer_fingerprint"));
+        let back: Registry = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, r);
+
+        assert!(matches!(
+            from_signer_export(&EXPORT.replacen("spending", "savings", 1)),
+            Err(RegistryError::Export(m)) if m.contains("scan it again")
+        ));
+        assert!(matches!(
+            from_signer_export("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"),
+            Err(RegistryError::SecretRejected)
+        ));
+        // A label with many words isn't mistaken for a seed phrase.
+        let json = EXPORT
+            .strip_prefix(watch_export::PREFIX)
+            .and_then(|b| b.rsplit_once('#'))
+            .map(|(j, _)| j.replacen("Test spending", "my long spending wallet for daily use", 1))
+            .expect("json");
+        let sum = {
+            use sha2::{Digest, Sha256};
+            hex::encode(&Sha256::digest(json.as_bytes())[..4])
+        };
+        let long = format!("{}{json}#{sum}", watch_export::PREFIX);
+        assert!(from_signer_export(&long).is_ok());
+        assert!(matches!(
+            from_signer_export("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"),
+            Err(RegistryError::Export(_))
         ));
     }
 

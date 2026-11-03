@@ -17,6 +17,8 @@ const ALLOWED = new Set([
   "lock",
   "startup_checks",
   "get_receive",
+  "preview_signer_wallet",
+  "add_signer_wallet",
 ]);
 
 window.__TAURI_ISOLATION_HOOK__ = (payload) => {

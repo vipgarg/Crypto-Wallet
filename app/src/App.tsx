@@ -18,6 +18,7 @@ import {
   type Tier,
   type WalletView,
 } from "./api";
+import { AddFromSigner } from "./ScanSigner";
 
 type Page = "portfolio" | "receive" | "activity" | "wallets" | "checks" | "about";
 
@@ -278,6 +279,9 @@ function WalletsPage({ onChanged }: { onChanged: () => void }) {
           <h3>
             {w.label} <span className="muted">· {w.id} · {w.tier_name}</span>
           </h3>
+          {w.signer_fingerprint && (
+            <p className="hint">From the signer tablet · fingerprint {w.signer_fingerprint}</p>
+          )}
           <dl>
             {w.btc && (
               <>
@@ -306,8 +310,19 @@ function WalletsPage({ onChanged }: { onChanged: () => void }) {
         </div>
       ))}
 
+      <AddFromSigner
+        onAdded={(w) => {
+          setWallets(w);
+          onChanged();
+        }}
+      />
+
       <form className="card form" onSubmit={(e) => void add(e)}>
-        <h3>Add a wallet to watch</h3>
+        <h3>Or add a wallet by hand</h3>
+        <p className="hint">
+          For wallets not made on the tablet (e.g. an exchange deposit address). Prefer the tablet export above: it
+          avoids typing mistakes.
+        </p>
         <label>
           ID <span className="muted">(e.g. savings-01)</span>
           <input value={form.id} onChange={set("id")} required maxLength={32} autoComplete="off" spellCheck={false} />

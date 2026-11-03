@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The only capability: the main window may call the fourteen reviewed app commands. No core plugins, no shell, fs, http, opener or updater.",
+  "description": "The only capability: the main window may call the sixteen reviewed app commands. No core plugins, no shell, fs, http, opener or updater.",
   "local": true,
   "windows": ["main"],
   "permissions": [
@@ -18,6 +18,8 @@
     "allow-unlock",
     "allow-lock",
     "allow-startup-checks",
-    "allow-get-receive"
+    "allow-get-receive",
+    "allow-preview-signer-wallet",
+    "allow-add-signer-wallet"
   ]
 }

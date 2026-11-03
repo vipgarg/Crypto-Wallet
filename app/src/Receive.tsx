@@ -12,7 +12,7 @@ const NETWORKS: { id: ReceiveNetwork; label: string; has: (w: WalletView) => boo
 const CLIPBOARD_CLEAR_MS = 60_000;
 
 /** Address in even groups of 4, with the first and last 6 characters in bold. */
-function ChunkedAddress({ a }: { a: string }) {
+export function ChunkedAddress({ a }: { a: string }) {
   const chars = [...a];
   const parts: { text: string; bold: boolean }[] = [];
   chars.forEach((c, i) => {

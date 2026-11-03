@@ -3615,6 +3615,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "wallet-types",
+ "watch-export",
  "zeroize",
 ]
 
@@ -4781,11 +4782,14 @@ dependencies = [
  "chain-tron",
  "data-sources",
  "futures-util",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "wallet-types",
+ "watch-export",
 ]
 
 [[package]]
@@ -4887,6 +4891,21 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "watch-export"
+version = "0.1.0"
+dependencies = [
+ "chain-btc",
+ "chain-eth",
+ "chain-tron",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "wallet-types",
 ]
 
 [[package]]
