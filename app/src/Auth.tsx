@@ -68,7 +68,7 @@ export function ChecksPanel({ compact = false }: { compact?: boolean }) {
   );
 }
 
-export function QrCode({ size, modules }: { size: number; modules: boolean[] }) {
+export function QrCode({ size, modules, px = 220 }: { size: number; modules: boolean[]; px?: number }) {
   const quiet = 4;
   const total = size + quiet * 2;
   const rects = [];
@@ -78,7 +78,7 @@ export function QrCode({ size, modules }: { size: number; modules: boolean[] }) 
     }
   }
   return (
-    <svg className="qr" viewBox={`0 0 ${total} ${total}`} width={220} height={220} shapeRendering="crispEdges">
+    <svg className="qr" viewBox={`0 0 ${total} ${total}`} width={px} height={px} shapeRendering="crispEdges">
       <rect width={total} height={total} fill="#fff" />
       <g fill="#000">{rects}</g>
     </svg>

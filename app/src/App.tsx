@@ -22,8 +22,9 @@ import {
 import { AddFromSigner } from "./ScanSigner";
 import { AuditLogPage } from "./AuditLog";
 import { AddressBookPage } from "./AddressBook";
+import { TestSendPage } from "./TestSend";
 
-type Page = "portfolio" | "receive" | "activity" | "addresses" | "wallets" | "checks" | "log" | "about";
+type Page = "portfolio" | "receive" | "activity" | "addresses" | "wallets" | "testsend" | "checks" | "log" | "about";
 
 const STATUS_TEXT: Record<BalanceStatus, string> = {
   verified: "Verified (2+ sources agree)",
@@ -804,9 +805,9 @@ function MainApp({ onLock }: { onLock: () => void }) {
           Watch-Only Wallet <span className="tag">no keys on this computer</span>
         </div>
         <nav>
-          {(["portfolio", "receive", "activity", "addresses", "wallets", "checks", "log", "about"] as Page[]).map((p) => (
+          {(["portfolio", "receive", "activity", "addresses", "wallets", "testsend", "checks", "log", "about"] as Page[]).map((p) => (
             <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
-              {p === "addresses" ? "Address book" : p[0].toUpperCase() + p.slice(1)}
+              {p === "addresses" ? "Address book" : p === "testsend" ? "Test send" : p[0].toUpperCase() + p.slice(1)}
             </button>
           ))}
           <button className="lock-btn" onClick={() => void api.lock(false).finally(onLock)} title="Lock the app now">
@@ -826,6 +827,7 @@ function MainApp({ onLock }: { onLock: () => void }) {
           </section>
         )}
         {page === "addresses" && <AddressBookPage />}
+        {page === "testsend" && <TestSendPage />}
         {page === "log" && <AuditLogPage />}
         {page === "about" && <AboutPage />}
       </main>

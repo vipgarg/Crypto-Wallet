@@ -135,6 +135,50 @@ export interface NewBookEntry {
   written_on_paper: boolean;
 }
 
+export interface TestWalletSummary {
+  id: string;
+  label: string;
+  fingerprint: string;
+}
+
+export interface TestWalletView {
+  id: string;
+  label: string;
+  fingerprint: string;
+  status: "verified" | "unverified" | "unavailable";
+  confirmed_sats: number;
+  used: { chain: number; index: number; address: string; confirmed_sats: number }[];
+  receive_address: string;
+  receive_index: number;
+  change_index: number;
+  problems: string[];
+}
+
+export interface SendPlan {
+  recipient: string;
+  amount_sats: number;
+  change_sats: number;
+  change_index: number | null;
+  fee_sats: number;
+  fee_rate: number;
+  inputs: number;
+  txid: string;
+}
+
+export interface PreparedSend {
+  plan: SendPlan;
+  qr_text: string;
+  qr_size: number;
+  qr_modules: boolean[];
+}
+
+export interface SentView {
+  txid: string;
+  accepted_by: string[];
+  errors: string[];
+  explorer_url: string;
+}
+
 export interface NewWalletInput {
   id: string;
   label: string;
@@ -317,6 +361,13 @@ export const api = {
   removeAddressBookEntry: (id: string) => call<AddressBookView>("remove_address_book_entry", { id }),
   renameAddressBookEntry: (id: string, label: string) =>
     call<AddressBookView>("rename_address_book_entry", { id, label }),
+  listTestWallets: () => call<TestWalletSummary[]>("list_test_wallets"),
+  addTestWallet: (text: string) => call<TestWalletSummary[]>("add_test_wallet", { text }),
+  removeTestWallet: (id: string) => call<TestWalletSummary[]>("remove_test_wallet", { id }),
+  scanTestWallet: (id: string) => call<TestWalletView>("scan_test_wallet", { id }),
+  prepareTestSend: (id: string, recipient: string, amountSats: number, feeRate: number) =>
+    call<PreparedSend>("prepare_test_send", { id, recipient, amountSats, feeRate }),
+  finishTestSend: (signedQr: string) => call<SentView>("finish_test_send", { signedQr }),
 };
 
 export function errorText(e: unknown): string {
