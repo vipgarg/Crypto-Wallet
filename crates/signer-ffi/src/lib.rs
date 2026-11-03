@@ -113,12 +113,13 @@ pub fn new_seed(dice_rolls: String) -> Result<Arc<Seed>, SignerError> {
     }))
 }
 
-/// Restore a seed from its 12 or 24 words (checksum is checked).
+/// Restore a seed from its 12 or 24 words, one word per entry (word #1
+/// first). The error names the word number that is wrong.
 #[uniffi::export]
-pub fn restore_seed(words: String) -> Result<Arc<Seed>, SignerError> {
+pub fn restore_seed(words: Vec<String>) -> Result<Arc<Seed>, SignerError> {
     let words = Zeroizing::new(words);
     Ok(Arc::new(Seed {
-        inner: seed::SeedMaterial::from_words(&words).map_err(seed_err)?,
+        inner: seed::SeedMaterial::from_word_list(&words).map_err(seed_err)?,
     }))
 }
 
@@ -289,7 +290,7 @@ mod tests {
             .starts_with("bc1q"));
         let qr = qr_code(exp).expect("qr");
         assert_eq!(qr.modules.len(), (qr.size * qr.size) as usize);
-        let restored = restore_seed(s.words().expect("w").join(" ")).expect("restore");
+        let restored = restore_seed(s.words().expect("w")).expect("restore");
         assert_eq!(
             restored.derive_public(String::new()).expect("p").eth,
             s.derive_public(String::new()).expect("p").eth

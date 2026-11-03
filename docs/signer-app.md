@@ -45,6 +45,7 @@ Design references: ARCHITECTURE-MOBILE.md §2, §4, §5.1a; ARCHITECTURE.md §6,
 Built by `.github/workflows/android.yml` (decision: Option A, GitHub Actions).
 
 - Screens: safety checks → wallet list → create (dice, 24 words, word check, passphrase, vault password) / restore from words → wallet detail → export QR for the PC, verify Bitcoin/Ethereum/TRON address (QR + text with bold ends).
+- Restore from words: 12 or 24 numbered boxes, one word each. Words are hidden except the box being typed in (or the one whose **Show** was tapped), so only one word is readable at a time. Errors name the problem exactly: wrong word count, an empty box, word #n not in the BIP-39 list, or a checksum mismatch (a wrong valid word or two words swapped). The word itself is never shown in an error. The write-down check also names which word numbers don't match.
 - Guard in CI: the build fails if the APK requests `INTERNET` permission.
 - **Known limits of this first build (to fix before real funds):**
   - Debug-signed: GitHub's runner creates a new debug key each run, so installing a newer build means **uninstalling the old one, which deletes the test wallets** on the tablet (restore them from their words). A fixed release signing key comes later.

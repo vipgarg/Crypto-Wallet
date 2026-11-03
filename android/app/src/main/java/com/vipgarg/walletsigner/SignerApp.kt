@@ -23,15 +23,18 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -40,8 +43,10 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -268,26 +273,68 @@ private fun CreateWallet(
         }
 
         Step.RESTORE_WORDS -> {
-            var words by remember { mutableStateOf("") }
-            Hint("Type the 12 or 24 recovery words, separated by spaces.")
-            OutlinedTextField(
-                words,
-                { words = it },
-                label = { Text("Recovery words") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                minLines = 4,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Button(onClick = {
-                try {
-                    seed = restoreSeed(words)
-                    words = ""
-                    error = null
-                    step = if (needsPassphrase) Step.PASSPHRASE else Step.PASSWORD
-                } catch (e: Exception) {
-                    error = e.message
+            var count by remember { mutableStateOf(24) }
+            val words = remember { mutableStateListOf(*Array(24) { "" }) }
+            // Only one word is readable at a time: the box being typed in, or
+            // the one whose "Show" was tapped.
+            var visible by remember { mutableStateOf(-1) }
+            var restoreError by remember { mutableStateOf<String?>(null) }
+            Hint("Type one word in each box, in the same order as on your paper (#1 first).")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                listOf(12, 24).forEach { n ->
+                    RadioButton(selected = count == n, onClick = { count = n; restoreError = null })
+                    Text("$n words", modifier = Modifier.padding(end = 16.dp))
                 }
-            }) { Text("Next") }
+            }
+            (0 until count).chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    pair.forEach { i ->
+                        OutlinedTextField(
+                            words[i],
+                            { v -> words[i] = v.filter { !it.isWhitespace() }.lowercase(); restoreError = null },
+                            label = { Text("#${i + 1}") },
+                            singleLine = true,
+                            visualTransformation =
+                                if (visible == i) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                                autoCorrectEnabled = false,
+                                imeAction = if (i == count - 1) ImeAction.Done else ImeAction.Next,
+                            ),
+                            trailingIcon = {
+                                TextButton(onClick = { visible = if (visible == i) -1 else i }) {
+                                    Text(if (visible == i) "Hide" else "Show")
+                                }
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { f ->
+                                    if (f.isFocused) visible = i else if (visible == i) visible = -1
+                                },
+                        )
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+            restoreError?.let { Hint(it, BAD) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    for (i in words.indices) words[i] = ""
+                    visible = -1
+                    restoreError = null
+                }) { Text("Clear all") }
+                Button(onClick = {
+                    try {
+                        seed = restoreSeed(words.take(count))
+                        for (i in words.indices) words[i] = ""
+                        restoreError = null
+                        error = null
+                        step = if (needsPassphrase) Step.PASSPHRASE else Step.PASSWORD
+                    } catch (e: Exception) {
+                        restoreError = "Can't restore: " + (e.message ?: "unknown error")
+                    }
+                }) { Text("Next") }
+            }
         }
 
         Step.SHOW_WORDS -> {
@@ -326,12 +373,14 @@ private fun CreateWallet(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { step = Step.SHOW_WORDS }) { Text("Show words again") }
                 Button(onClick = {
-                    val ok = seed?.checkWords(positions, answers.map { it.value }) == true
-                    if (ok) {
+                    val wrong = positions.indices
+                        .filter { seed?.checkWords(listOf(positions[it]), listOf(answers[it].value)) != true }
+                        .map { "#${positions[it]}" }
+                    if (wrong.isEmpty()) {
                         error = null
                         step = if (needsPassphrase) Step.PASSPHRASE else Step.PASSWORD
                     } else {
-                        error = "One or more words don't match. Check your paper."
+                        error = "Word ${wrong.joinToString(", ")} doesn't match. Check your paper."
                     }
                 }) { Text("Check") }
             }

@@ -13,6 +13,16 @@ use zeroize::{Zeroize, Zeroizing};
 pub enum SeedError {
     #[error("the recovery phrase must be 12 or 24 words from the BIP-39 English list, with a valid checksum")]
     InvalidWords,
+    #[error("{0} words entered: a recovery phrase has 12 or 24 words")]
+    WrongWordCount(usize),
+    #[error("word #{0} is empty")]
+    EmptyWord(usize),
+    #[error("word #{0} contains a space: put exactly one word in each box")]
+    NotOneWord(usize),
+    #[error("word #{0} is not in the BIP-39 English word list: check its spelling")]
+    UnknownWord(usize),
+    #[error("every word is in the word list, but the checksum doesn't match: a word is wrong (a different valid word) or two words are in the wrong order. Compare each word with your paper, in order")]
+    BadChecksum,
     #[error("key derivation failed")]
     Derivation,
 }
@@ -31,21 +41,40 @@ impl SeedMaterial {
         }
     }
 
-    /// Restore from words typed or scanned on the signer.
+    /// Restore from words typed or scanned on the signer, as one string
+    /// separated by spaces.
     pub fn from_words(words: &str) -> Result<Self, SeedError> {
-        let normalized: Zeroizing<String> = Zeroizing::new(
-            words
-                .split_whitespace()
-                .map(str::to_lowercase)
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
-        let m = Mnemonic::parse_in(Language::English, normalized.as_str())
-            .map_err(|_| SeedError::InvalidWords)?;
-        let count = m.word_count();
-        if count != 12 && count != 24 {
-            return Err(SeedError::InvalidWords);
+        let list: Zeroizing<Vec<String>> =
+            Zeroizing::new(words.split_whitespace().map(str::to_owned).collect());
+        Self::from_word_list(&list)
+    }
+
+    /// Restore from one word per entry (word #1 first). Errors name the word
+    /// number but never the word itself.
+    pub fn from_word_list(words: &[String]) -> Result<Self, SeedError> {
+        if words.len() != 12 && words.len() != 24 {
+            return Err(SeedError::WrongWordCount(words.len()));
         }
+        let mut normalized: Zeroizing<Vec<String>> =
+            Zeroizing::new(Vec::with_capacity(words.len()));
+        for (i, w) in words.iter().enumerate() {
+            let w = w.trim().to_lowercase();
+            if w.is_empty() {
+                return Err(SeedError::EmptyWord(i + 1));
+            }
+            if w.contains(char::is_whitespace) {
+                return Err(SeedError::NotOneWord(i + 1));
+            }
+            if Language::English.find_word(&w).is_none() {
+                return Err(SeedError::UnknownWord(i + 1));
+            }
+            normalized.push(w);
+        }
+        let joined = Zeroizing::new(normalized.join(" "));
+        let m = Mnemonic::parse_in(Language::English, joined.as_str()).map_err(|e| match e {
+            bip39::Error::InvalidChecksum => SeedError::BadChecksum,
+            _ => SeedError::InvalidWords,
+        })?;
         Ok(Self {
             entropy: Zeroizing::new(m.to_entropy()),
         })
@@ -171,9 +200,44 @@ mod tests {
         };
         assert_eq!(
             SeedMaterial::from_words(&w.join(" ")).map(|_| ()),
-            Err(SeedError::InvalidWords)
+            Err(SeedError::BadChecksum)
         );
         assert!(SeedMaterial::from_words("hello world").is_err());
+    }
+
+    #[test]
+    fn restore_errors_name_the_word_number() {
+        let s = SeedMaterial::from_entropy(&[5u8; 32]);
+        let good: Vec<String> = s.words().expect("w").to_vec();
+        assert!(SeedMaterial::from_word_list(&good).is_ok());
+
+        let err = |w: &[String]| SeedMaterial::from_word_list(w).err();
+        assert_eq!(err(&good[..23]), Some(SeedError::WrongWordCount(23)));
+        let mut w = good.clone();
+        w[4] = "  ".into();
+        assert_eq!(err(&w), Some(SeedError::EmptyWord(5)));
+        let mut w = good.clone();
+        w[6] = "able about".into();
+        assert_eq!(err(&w), Some(SeedError::NotOneWord(7)));
+        let mut w = good.clone();
+        w[9] = "bitcoinz".into();
+        assert_eq!(err(&w), Some(SeedError::UnknownWord(10)));
+        let mut w = good.clone();
+        w.swap(0, 1);
+        if w != good {
+            assert_eq!(err(&w), Some(SeedError::BadChecksum));
+        }
+        let mut w = good.clone();
+        w[2] = format!("  {}  ", w[2].to_uppercase());
+        assert!(
+            SeedMaterial::from_word_list(&w).is_ok(),
+            "case and spaces don't matter"
+        );
+        // The message never contains the word itself.
+        let mut w = good.clone();
+        w[3] = "zzzzsecret".into();
+        let msg = err(&w).expect("err").to_string();
+        assert!(!msg.contains("zzzzsecret"));
     }
 
     #[test]
