@@ -15,6 +15,7 @@
 //! **Test network only in this build:** signet. Mainnet sending comes after
 //! the Phase 2 gates.
 
+pub use bitcoin;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint, Xpub};
 use bitcoin::psbt::Psbt;
 use bitcoin::secp256k1::{Message, Secp256k1};

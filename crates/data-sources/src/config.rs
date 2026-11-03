@@ -86,12 +86,23 @@ struct RawPinned {
     usdt_trc20: String,
 }
 
+/// An Esplora provider on Bitcoin **signet** (test network; Phase 2 testing).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignetProvider {
+    pub id: String,
+    pub base_url: String,
+    pub operator: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     version: u32,
     pinned: RawPinned,
     providers: Vec<ProviderConfig>,
+    #[serde(default)]
+    signet_providers: Vec<SignetProvider>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +112,8 @@ pub struct NetworkConfig {
     pub eth_chain_id: u64,
     pub usdt_trc20: TronAddress,
     pub providers: Vec<ProviderConfig>,
+    /// Bitcoin signet providers (test network only).
+    pub signet_providers: Vec<SignetProvider>,
     /// SHA-256 of the exact config text, shown in the app so you can compare
     /// it with the reviewed release record.
     pub sha256: String,
@@ -171,6 +184,23 @@ impl NetworkConfig {
                 }
             }
         }
+        for p in &raw.signet_providers {
+            let err = |m| ConfigError::Provider(p.id.clone(), m);
+            if !ids.insert(p.id.clone()) {
+                return Err(err("duplicate id"));
+            }
+            let ok = p
+                .base_url
+                .strip_prefix("https://")
+                .is_some_and(|r| !r.is_empty() && !r.contains(char::is_whitespace))
+                && !p.base_url.ends_with('/');
+            if !ok {
+                return Err(err("URL must be https:// with no trailing slash"));
+            }
+            if p.operator.trim().is_empty() {
+                return Err(err("operator must be named"));
+            }
+        }
         let mut hasher = Sha256::new();
         // Hash with LF line endings so the value is identical on Windows
         // (where Git may check the file out with CRLF) and everywhere else.
@@ -181,6 +211,7 @@ impl NetworkConfig {
             eth_chain_id: raw.pinned.eth_chain_id,
             usdt_trc20,
             providers: raw.providers,
+            signet_providers: raw.signet_providers,
             sha256: hex::encode(hasher.finalize()),
         })
     }

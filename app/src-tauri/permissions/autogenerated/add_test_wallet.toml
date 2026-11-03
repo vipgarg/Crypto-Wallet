@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-add-test-wallet"
+description = "Enables the add_test_wallet command without any pre-configured scope."
+commands.allow = ["add_test_wallet"]
+
+[[permission]]
+identifier = "deny-add-test-wallet"
+description = "Denies the add_test_wallet command without any pre-configured scope."
+commands.deny = ["add_test_wallet"]

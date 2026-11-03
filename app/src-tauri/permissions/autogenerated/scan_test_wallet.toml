@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-scan-test-wallet"
+description = "Enables the scan_test_wallet command without any pre-configured scope."
+commands.allow = ["scan_test_wallet"]
+
+[[permission]]
+identifier = "deny-scan-test-wallet"
+description = "Denies the scan_test_wallet command without any pre-configured scope."
+commands.deny = ["scan_test_wallet"]

@@ -90,7 +90,11 @@ pub fn test_account(master: &Xpriv) -> Result<Xpriv, SignError> {
 /// Public account key for test networks (exported to the PC as a tpub).
 pub fn test_account_xpub(master: &Xpriv) -> Result<Xpub, SignError> {
     let secp = Secp256k1::new();
-    Ok(Xpub::from_priv(&secp, &test_account(master)?))
+    let mut x = Xpub::from_priv(&secp, &test_account(master)?);
+    // Always serialised as a test-network key ("tpub"), whatever the master
+    // key's own network label, so it can't be mistaken for a mainnet key.
+    x.network = bitcoin::NetworkKind::Test;
+    Ok(x)
 }
 
 /// `m/84'/1'/0'/chain/index` → (chain, index), or `None` if the path is
@@ -412,6 +416,22 @@ pub fn sign(mut psbt: Psbt, master: &Xpriv) -> Result<(Psbt, Review), SignError>
         psbt.inputs[i].partial_sigs = sigs;
     }
     Ok((psbt, rev))
+}
+
+/// True if `typed` equals the last 6 characters of `address` (the approval
+/// step: typed from your paper address book). Case-insensitive, because
+/// signet addresses are lowercase bech32.
+pub fn last6_matches(address: &str, typed: &str) -> bool {
+    let typed = typed.trim().to_lowercase();
+    let tail: String = address
+        .chars()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    typed.chars().count() == 6 && tail.to_lowercase() == typed
 }
 
 /// Read a PSBT from bytes.

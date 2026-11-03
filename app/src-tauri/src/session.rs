@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::testnet::TestWallet;
 use audit_log::{AuditLog, Event};
 use auth::lockout::Lockout;
 use auth::store::{self, KdfParams, StoreError};
@@ -43,11 +44,15 @@ struct StoreContents {
     /// Added later; older stores load with an empty book.
     #[serde(default)]
     address_book: AddressBook,
+    /// Bitcoin signet test wallets (Phase 2 testing). Added later.
+    #[serde(default)]
+    test_wallets: Vec<TestWallet>,
 }
 
 struct Unlocked {
     registry: Registry,
     address_book: AddressBook,
+    test_wallets: Vec<TestWallet>,
     key: Zeroizing<[u8; 32]>,
     kdf: KdfParams,
     totp_secret: Zeroizing<Vec<u8>>,
@@ -199,6 +204,7 @@ impl SessionState {
         let unlocked = Unlocked {
             registry,
             address_book: AddressBook::default(),
+            test_wallets: Vec::new(),
             key,
             kdf,
             totp_secret: secret,
@@ -229,6 +235,7 @@ impl SessionState {
             totp_secret: totp::secret_base32(&u.totp_secret).to_string(),
             totp_last_step: u.totp_last_step,
             address_book: u.address_book.clone(),
+            test_wallets: u.test_wallets.clone(),
         };
         let bytes = store::seal(&u.key, &u.kdf, &contents).map_err(|e| e.to_string())?;
         store::write_atomic(&self.paths.store, &bytes).map_err(|e| e.to_string())
@@ -282,6 +289,7 @@ impl SessionState {
         let unlocked = Unlocked {
             registry: contents.registry,
             address_book: contents.address_book,
+            test_wallets: contents.test_wallets,
             key,
             kdf,
             totp_secret: secret,
@@ -346,6 +354,34 @@ impl SessionState {
         if let Err(e) = self.persist(u) {
             u.address_book = previous;
             return Err(e);
+        }
+        Ok(out)
+    }
+
+    /// Run `f` on the test wallets if unlocked. With `save`, the change is
+    /// encrypted and written first.
+    pub fn with_test_wallets<T>(
+        &self,
+        save: bool,
+        f: impl FnOnce(&mut Vec<TestWallet>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut s = self.inner.lock().map_err(|_| INTERNAL.to_owned())?;
+        let Session::Unlocked(u) = &mut *s else {
+            return Err(LOCKED_MSG.into());
+        };
+        if u.last_activity.elapsed() > IDLE_LOCK {
+            *s = Session::Locked;
+            return Err(LOCKED_MSG.into());
+        }
+        u.last_activity = Instant::now();
+        let mut next = u.test_wallets.clone();
+        let out = f(&mut next)?;
+        if save {
+            let previous = std::mem::replace(&mut u.test_wallets, next);
+            if let Err(e) = self.persist(u) {
+                u.test_wallets = previous;
+                return Err(e);
+            }
         }
         Ok(out)
     }

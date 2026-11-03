@@ -31,6 +31,13 @@ pub trait HttpClient: Send + Sync {
         url: &str,
         body: &Value,
     ) -> impl Future<Output = Result<Value, HttpError>> + Send;
+    /// POST a plain-text body (used only to broadcast a signed transaction
+    /// to an Esplora `/tx` endpoint) and return the text answer.
+    fn post_text(
+        &self,
+        url: &str,
+        body: &str,
+    ) -> impl Future<Output = Result<String, HttpError>> + Send;
 }
 
 /// Explain a network failure with its underlying cause (timeout, refused,
@@ -127,5 +134,18 @@ impl HttpClient for ReqwestClient {
             .map_err(|e| HttpError::Network(describe(&e)))?;
         let body = Self::read_body(resp).await?;
         serde_json::from_slice(&body).map_err(|_| HttpError::Body)
+    }
+
+    async fn post_text(&self, url: &str, body: &str) -> Result<String, HttpError> {
+        let resp = self
+            .inner
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "text/plain")
+            .body(body.to_owned())
+            .send()
+            .await
+            .map_err(|e| HttpError::Network(describe(&e)))?;
+        let body = Self::read_body(resp).await?;
+        String::from_utf8(body).map_err(|_| HttpError::Body)
     }
 }

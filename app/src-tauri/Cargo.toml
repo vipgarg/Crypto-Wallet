@@ -27,9 +27,15 @@ tauri = { version = "2.12", features = ["isolation"] }
 tokio = { version = "1", default-features = false, features = ["time"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 wallet-core = { path = "../../crates/wallet-core" }
+btc-send = { path = "../../crates/btc-send" }
+watch-export = { path = "../../crates/watch-export" }
 wallet-types = { path = "../../crates/wallet-types" }
 chain-btc = { path = "../../crates/chain-btc" }
 chain-eth = { path = "../../crates/chain-eth" }
+
+[dev-dependencies]
+data-sources = { path = "../../crates/data-sources", features = ["mock"] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
 
 [lints]
 workspace = true

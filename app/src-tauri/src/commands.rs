@@ -42,6 +42,7 @@ use wallet_types::{Network, Tier};
 use zeroize::Zeroizing;
 
 use crate::session::{AuthStatus, SessionState, SetupInfo};
+use crate::testnet::{self, PendingSend, SentView, TestWallet, TestWalletView};
 
 pub struct AppState {
     /// Login state and the encrypted wallet list (session.rs).
@@ -51,6 +52,8 @@ pub struct AppState {
     pub progress: ProgressState,
     /// Last check problems written to the audit log (to avoid repeats).
     pub last_check_problems: Mutex<Option<String>>,
+    /// A test payment built here and waiting for the tablet's signature.
+    pub pending_send: Mutex<Option<PendingSend>>,
 }
 
 /// A whole refresh is stopped after this long; whatever hasn't answered by
@@ -817,6 +820,188 @@ pub async fn rename_address_book_entry(
     Ok(view)
 }
 
+// ---------------------------------------------------------------------------
+// Bitcoin signet test wallets and test payments (Phase 2 testing)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct TestWalletSummary {
+    id: String,
+    label: String,
+    fingerprint: String,
+}
+
+fn test_summaries(ws: &[TestWallet]) -> Vec<TestWalletSummary> {
+    ws.iter()
+        .map(|w| TestWalletSummary {
+            id: w.id.clone(),
+            label: w.label.clone(),
+            fingerprint: w.fingerprint.clone(),
+        })
+        .collect()
+}
+
+fn find_test_wallet(state: &AppState, id: &str) -> Result<TestWallet, String> {
+    state.session.with_test_wallets(false, |ws| {
+        ws.iter()
+            .find(|w| w.id == id)
+            .cloned()
+            .ok_or_else(|| "Unknown test wallet.".to_owned())
+    })
+}
+
+#[tauri::command]
+pub fn list_test_wallets(state: State<'_, AppState>) -> Result<Vec<TestWalletSummary>, String> {
+    state
+        .session
+        .with_test_wallets(false, |ws| Ok(test_summaries(ws)))
+}
+
+/// Add a test wallet from the tablet's test export (`WWT1:` QR text).
+#[tauri::command]
+pub fn add_test_wallet(
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<Vec<TestWalletSummary>, String> {
+    let e = watch_export::decode_test(&text).map_err(|e| e.to_string())?;
+    let w = TestWallet::from(e);
+    let id = w.id.clone();
+    let out = state.session.with_test_wallets(true, |ws| {
+        if ws.iter().any(|x| x.id == w.id || x.tpub == w.tpub) {
+            return Err("This test wallet is already added.".into());
+        }
+        if ws.len() >= 20 {
+            return Err("Too many test wallets (max 20).".into());
+        }
+        ws.push(w);
+        Ok(test_summaries(ws))
+    })?;
+    state
+        .session
+        .audit()
+        .record(Event::TestWalletAdded, &format!("{id} (signet)"));
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn remove_test_wallet(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<TestWalletSummary>, String> {
+    let out = state.session.with_test_wallets(true, |ws| {
+        let before = ws.len();
+        ws.retain(|w| w.id != id);
+        if ws.len() == before {
+            return Err("Unknown test wallet.".into());
+        }
+        Ok(test_summaries(ws))
+    })?;
+    state
+        .session
+        .audit()
+        .record(Event::TestWalletRemoved, &format!("{id} (signet)"));
+    Ok(out)
+}
+
+/// Balance, used addresses and a fresh receive address (cross-checked).
+#[tauri::command]
+pub async fn scan_test_wallet(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<TestWalletView, String> {
+    let w = find_test_wallet(&state, &id)?;
+    tokio::time::timeout(
+        Duration::from_secs(120),
+        testnet::scan(&state.http, &state.config, &w),
+    )
+    .await
+    .map_err(|_| "The signet providers didn't answer in time.".to_owned())?
+}
+
+#[derive(Serialize)]
+pub struct PreparedSend {
+    plan: btc_send::Plan,
+    /// The payment request for the tablet, as QR text and as a QR matrix.
+    qr_text: String,
+    qr_size: usize,
+    qr_modules: Vec<bool>,
+}
+
+/// Build a test payment and show it as a QR code for the tablet. The PC
+/// keeps its own copy; only signatures are taken from what comes back.
+#[tauri::command]
+pub async fn prepare_test_send(
+    state: State<'_, AppState>,
+    id: String,
+    recipient: String,
+    amount_sats: u64,
+    fee_rate: u64,
+) -> Result<PreparedSend, String> {
+    let w = find_test_wallet(&state, &id)?;
+    let to = btc_send::parse_recipient(&recipient).map_err(|e| e.to_string())?;
+    let acct = w.account()?;
+    let view = tokio::time::timeout(
+        Duration::from_secs(120),
+        testnet::scan(&state.http, &state.config, &w),
+    )
+    .await
+    .map_err(|_| "The signet providers didn't answer in time.".to_owned())??;
+    let coins = testnet::coins(&state.http, &state.config, &view.used).await?;
+    if coins.is_empty() {
+        return Err("This test wallet has no confirmed coins yet. Get some from a signet faucet and wait for 1 confirmation.".into());
+    }
+    let (psbt, plan) =
+        btc_send::build(&acct, &coins, &to, amount_sats, fee_rate, view.change_index)
+            .map_err(|e| e.to_string())?;
+    let qr_text = watch_export::psbt_to_qr(&psbt.serialize())
+        .map_err(|_| "The payment is too large for one QR code (too many coins).".to_owned())?;
+    let qr = crate::qr::matrix_large(&qr_text)?;
+    *state.pending_send.lock().map_err(|_| LOCK_ERR.to_owned())? = Some(PendingSend {
+        wallet_id: w.id.clone(),
+        psbt,
+        plan: plan.clone(),
+    });
+    Ok(PreparedSend {
+        plan,
+        qr_text,
+        qr_size: qr.size,
+        qr_modules: qr.modules,
+    })
+}
+
+/// Take the tablet's signed QR, verify every signature against the payment
+/// built here, and broadcast it to both signet providers.
+#[tauri::command]
+pub async fn finish_test_send(
+    state: State<'_, AppState>,
+    signed_qr: String,
+) -> Result<SentView, String> {
+    // Login check (counts as activity).
+    state.session.with_test_wallets(false, |_| Ok(()))?;
+    let bytes = watch_export::psbt_from_qr(&signed_qr).map_err(|_| {
+        "That isn't a signed payment from the tablet (or it was scanned wrongly).".to_owned()
+    })?;
+    let signed = btc_send::from_bytes(&bytes).map_err(|e| e.to_string())?;
+    let (built, wallet_id) = {
+        let p = state.pending_send.lock().map_err(|_| LOCK_ERR.to_owned())?;
+        let p = p
+            .as_ref()
+            .ok_or_else(|| "No payment is waiting for a signature. Prepare it again.".to_owned())?;
+        (p.psbt.clone(), p.wallet_id.clone())
+    };
+    let tx = btc_send::finalize(&built, &signed).map_err(|e| e.to_string())?;
+    let sent = testnet::broadcast(&state.http, &state.config, &tx).await?;
+    *state.pending_send.lock().map_err(|_| LOCK_ERR.to_owned())? = None;
+    state.session.audit().record(
+        Event::TestPaymentSent,
+        &format!(
+            "{wallet_id} (signet), transaction {}",
+            sent.txid.chars().take(8).collect::<String>()
+        ),
+    );
+    Ok(sent)
+}
+
 #[tauri::command]
 pub fn get_progress(state: State<'_, AppState>) -> Result<ProgressView, String> {
     // Requires login, but polling doesn't count as activity.
@@ -1242,7 +1427,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            21,
+            27,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

@@ -10,6 +10,7 @@ pub mod config;
 pub mod cross_check;
 pub mod fetch;
 pub mod http;
+pub mod signet;
 
 pub use config::{NetworkConfig, ProviderConfig, ProviderKind};
 pub use cross_check::{cross_check, CrossChecked};

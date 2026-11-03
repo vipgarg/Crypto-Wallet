@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod qr;
 pub mod session;
+pub mod testnet;
 
 use std::sync::Arc;
 
@@ -48,6 +49,7 @@ pub fn run() {
                 http,
                 progress: commands::ProgressState::default(),
                 last_check_problems: std::sync::Mutex::new(None),
+                pending_send: std::sync::Mutex::new(None),
             });
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -80,6 +82,12 @@ pub fn run() {
             commands::add_address_book_entry,
             commands::remove_address_book_entry,
             commands::rename_address_book_entry,
+            commands::list_test_wallets,
+            commands::add_test_wallet,
+            commands::remove_test_wallet,
+            commands::scan_test_wallet,
+            commands::prepare_test_send,
+            commands::finish_test_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

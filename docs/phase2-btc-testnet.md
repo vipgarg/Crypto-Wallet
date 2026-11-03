@@ -43,10 +43,17 @@ Coins on **signet** have no value. Mainnet signing is not compiled into this bui
 | Fake change (attacker's address, receive chain), second recipient, huge fee, lock time, unknown data, unusual signature type → refused by the tablet | ✅ |
 | Mainnet address as recipient → refused | ✅ |
 
+## Built since
+
+- **Test-network export** (`WWT1:`, separate from the mainnet `WWX1:` export; neither is accepted as the other). The tablet bridge has `test_export_string`, `review_btc` and `sign_btc` on an unlocked wallet; `sign_btc` signs only if the request still has the reviewed transaction ID **and** the typed last 6 characters match the recipient. Tested end to end through the bridge (vault → export → PC build → review → wrong last-6 refused → changed request refused → sign → PC finalise).
+- **PSBT QR envelope** (`WPS1:` + base64 + checksum, up to 2,100 bytes in one QR).
+- **Signet data on the PC** (`config/networks.v1.toml` → `signet_providers`: mempool.space and mempool.emzy.de, separate from the real providers): balances cross-checked, coins and previous transactions (checked to hash to the coin's id), broadcast to both providers.
+- **PC commands** (27 reviewed): test wallets add / list / remove / scan (balance, fresh receive address, next change index), `prepare_test_send` (builds the payment, keeps its own copy, returns the QR), `finish_test_send` (only signatures taken; verified; broadcast; audit-log entry).
+
 ## Still to build for this step
 
-1. **Test-network wallet export** from the tablet (the `m/84'/1'/0'` public key; the mainnet export stays unchanged) and import on the PC.
-2. **Signet data on the PC:** balances, coins (`/utxo`), previous transactions (`/tx/{id}/hex`) and broadcast (`POST /tx`) from two providers (mempool.space signet, mempool.emzy.de signet).
+1. ~~Test-network export~~ ✅
+2. ~~Signet data on the PC~~ ✅
 3. **Tablet camera QR scanner** (offline; CAMERA permission only, still no INTERNET) and the review/approve/sign screens, including "type the last 6 characters".
 4. **PC Send page** (signet only): draft from the address book → QR → scan the signed QR with the webcam → verify → broadcast.
 5. **Larger requests:** multi-part QR codes if a PSBT doesn't fit in one QR (many coins).

@@ -24,6 +24,12 @@ const ALLOWED = new Set([
   "add_address_book_entry",
   "remove_address_book_entry",
   "rename_address_book_entry",
+  "list_test_wallets",
+  "add_test_wallet",
+  "remove_test_wallet",
+  "scan_test_wallet",
+  "prepare_test_send",
+  "finish_test_send",
 ]);
 
 window.__TAURI_ISOLATION_HOOK__ = (payload) => {

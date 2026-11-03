@@ -105,3 +105,17 @@ network = "tron"
 kind = "tron_http"
 base_url = "https://tron-rpc.publicnode.com"
 operator = "PublicNode (Allnodes)"
+
+# ---------------------------------------------------------------------------
+# Bitcoin SIGNET: a public TEST network whose coins have no value. Used only
+# for Phase 2 testing (sending from test wallets). Never used for real
+# wallets or balances.
+[[signet_providers]]
+id = "mempool-space-signet"
+base_url = "https://mempool.space/signet/api"
+operator = "mempool.space"
+
+[[signet_providers]]
+id = "emzy-signet"
+base_url = "https://mempool.emzy.de/signet/api"
+operator = "Emzy (independent mempool instance)"

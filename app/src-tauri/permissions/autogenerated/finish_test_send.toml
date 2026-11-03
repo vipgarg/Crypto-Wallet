@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-finish-test-send"
+description = "Enables the finish_test_send command without any pre-configured scope."
+commands.allow = ["finish_test_send"]
+
+[[permission]]
+identifier = "deny-finish-test-send"
+description = "Denies the finish_test_send command without any pre-configured scope."
+commands.deny = ["finish_test_send"]

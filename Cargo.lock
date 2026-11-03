@@ -3643,6 +3643,8 @@ dependencies = [
 name = "signer-ffi"
 version = "0.1.0"
 dependencies = [
+ "bitcoin",
+ "btc-send",
  "qrcode",
  "signer-core",
  "thiserror 2.0.21",
@@ -4917,6 +4919,8 @@ dependencies = [
 name = "watch-export"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "bitcoin",
  "chain-btc",
  "chain-eth",
  "chain-tron",
@@ -4934,6 +4938,7 @@ version = "0.1.0"
 dependencies = [
  "audit-log",
  "auth",
+ "btc-send",
  "chain-btc",
  "chain-eth",
  "data-sources",
@@ -4947,6 +4952,7 @@ dependencies = [
  "tokio",
  "wallet-core",
  "wallet-types",
+ "watch-export",
  "zeroize",
 ]
 

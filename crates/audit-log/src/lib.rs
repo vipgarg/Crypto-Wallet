@@ -50,6 +50,10 @@ pub enum Event {
     AddressAdded,
     AddressRemoved,
     AddressRenamed,
+    /// Test-network (signet) wallet added / removed, payment sent.
+    TestWalletAdded,
+    TestWalletRemoved,
+    TestPaymentSent,
     /// PC safety checks reported a failure or warning.
     ChecksProblem,
 }

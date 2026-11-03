@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-test-wallet"
+description = "Enables the remove_test_wallet command without any pre-configured scope."
+commands.allow = ["remove_test_wallet"]
+
+[[permission]]
+identifier = "deny-remove-test-wallet"
+description = "Denies the remove_test_wallet command without any pre-configured scope."
+commands.deny = ["remove_test_wallet"]

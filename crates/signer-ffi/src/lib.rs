@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use signer_core::{accounts, entropy, export, seed, vault};
+use signer_core::{accounts, btc_sign, entropy, export, seed, vault};
 use wallet_types::{Tier, WalletId};
 use zeroize::Zeroizing;
 
@@ -30,6 +30,12 @@ pub enum SignerError {
     Export { msg: String },
     #[error("{msg}")]
     Input { msg: String },
+    #[error("{msg}")]
+    Sign { msg: String },
+}
+
+fn sign_err(e: btc_sign::SignError) -> SignerError {
+    SignerError::Sign { msg: e.to_string() }
 }
 
 fn seed_err(e: seed::SeedError) -> SignerError {
@@ -185,9 +191,52 @@ impl Seed {
 }
 
 /// An unlocked stored wallet (for one signing session; drop it afterwards).
+/// Holds the passphrase too (wiped on drop), because signing needs it.
 #[derive(uniffi::Object)]
 pub struct UnlockedWallet {
     inner: vault::UnlockedWallet,
+    passphrase: Zeroizing<String>,
+}
+
+impl UnlockedWallet {
+    fn master(&self) -> Result<bitcoin::bip32::Xpriv, SignerError> {
+        let pass: &str = if self.inner.uses_passphrase {
+            &self.passphrase
+        } else {
+            ""
+        };
+        self.inner.seed.master(pass).map_err(seed_err)
+    }
+}
+
+/// What the tablet shows before you approve a Bitcoin test payment.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BtcReviewRecord {
+    pub network: String,
+    pub recipient: String,
+    pub amount_sats: u64,
+    pub change_sats: u64,
+    pub change_index: Option<u32>,
+    pub fee_sats: u64,
+    pub fee_rate: u64,
+    pub inputs: u32,
+    pub txid: String,
+}
+
+impl From<btc_sign::Review> for BtcReviewRecord {
+    fn from(r: btc_sign::Review) -> Self {
+        Self {
+            network: r.network,
+            recipient: r.recipient,
+            amount_sats: r.amount_sats,
+            change_sats: r.change_sats,
+            change_index: r.change_index,
+            fee_sats: r.fee_sats,
+            fee_rate: r.fee_rate,
+            inputs: u32::try_from(r.inputs).unwrap_or(u32::MAX),
+            txid: r.txid,
+        }
+    }
 }
 
 #[uniffi::export]
@@ -200,7 +249,7 @@ pub fn unlock_vault(
     let passphrase = Zeroizing::new(passphrase);
     let inner = vault::unlock(&bytes, &vault_password, &passphrase)
         .map_err(|e| SignerError::Vault { msg: e.to_string() })?;
-    Ok(Arc::new(UnlockedWallet { inner }))
+    Ok(Arc::new(UnlockedWallet { inner, passphrase }))
 }
 
 #[uniffi::export]
@@ -213,6 +262,60 @@ impl UnlockedWallet {
     }
     pub fn public(&self) -> WalletPublicRecord {
         self.inner.public.clone().into()
+    }
+
+    /// Test-network (signet) watch-only export for the PC (`WWT1:`).
+    pub fn test_export_string(&self) -> Result<String, SignerError> {
+        let master = self.master()?;
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let tpub = btc_sign::test_account_xpub(&master).map_err(sign_err)?;
+        export::encode_test(&export::TestExport {
+            id: self.inner.id.clone(),
+            label: self.inner.label.clone(),
+            fingerprint: master.fingerprint(&secp).to_string(),
+            tpub: tpub.to_string(),
+        })
+        .map_err(|e| SignerError::Export { msg: e.to_string() })
+    }
+
+    /// Check a payment request scanned from the PC (`WPS1:` QR text) and
+    /// return what it does. Nothing is signed.
+    pub fn review_btc(&self, qr_text: String) -> Result<BtcReviewRecord, SignerError> {
+        let bytes =
+            export::psbt_from_qr(&qr_text).map_err(|e| SignerError::Sign { msg: e.to_string() })?;
+        let psbt = btc_sign::parse(&bytes).map_err(sign_err)?;
+        Ok(btc_sign::review(&psbt, &self.master()?)
+            .map_err(sign_err)?
+            .into())
+    }
+
+    /// Sign the request, but only if it is still exactly the one reviewed
+    /// (`expected_txid`) and the typed characters match the end of the
+    /// recipient address. Returns the signed request as QR text.
+    pub fn sign_btc(
+        &self,
+        qr_text: String,
+        expected_txid: String,
+        typed_last6: String,
+    ) -> Result<String, SignerError> {
+        let bytes =
+            export::psbt_from_qr(&qr_text).map_err(|e| SignerError::Sign { msg: e.to_string() })?;
+        let psbt = btc_sign::parse(&bytes).map_err(sign_err)?;
+        let master = self.master()?;
+        let review = btc_sign::review(&psbt, &master).map_err(sign_err)?;
+        if review.txid != expected_txid {
+            return Err(SignerError::Sign {
+                msg: "the request changed since it was reviewed".into(),
+            });
+        }
+        if !btc_sign::last6_matches(&review.recipient, &typed_last6) {
+            return Err(SignerError::Sign {
+                msg: "the last 6 characters you typed don't match the recipient address. Check your paper address book".into(),
+            });
+        }
+        let (signed, _) = btc_sign::sign(psbt, &master).map_err(sign_err)?;
+        export::psbt_to_qr(&signed.serialize())
+            .map_err(|e| SignerError::Export { msg: e.to_string() })
     }
 }
 
@@ -267,6 +370,83 @@ pub fn btc_receive_address(public: WalletPublicRecord, index: u32) -> Result<Str
 mod tests {
     use super::*;
 
+    /// Unlock a stored wallet, export its test key, let the PC code build a
+    /// payment, review and sign it here, and finalise it on the PC side.
+    fn test_payment_through_the_ffi(s: &Seed) {
+        use bitcoin::{
+            absolute, transaction, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
+            Witness,
+        };
+        let public = s.derive_public(String::new()).expect("pub");
+        let vault = s
+            .seal_vault(
+                "spend-01".into(),
+                "Spending".into(),
+                "spending".into(),
+                public,
+                false,
+                "vault password 123".into(),
+            )
+            .expect("seal");
+        let w = unlock_vault(vault, "vault password 123".into(), String::new()).expect("unlock");
+        let exp = export::decode_test(&w.test_export_string().expect("export")).expect("decode");
+        let acct = btc_send::Account {
+            xpub: exp.tpub.parse().expect("tpub"),
+            fingerprint: exp.fingerprint.parse().expect("fp"),
+        };
+        let prev = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(100_000),
+                script_pubkey: btc_send::address(&acct, 0, 2).expect("a").script_pubkey(),
+            }],
+        };
+        let coins = vec![btc_send::Coin {
+            prev_tx: prev,
+            vout: 0,
+            chain: 0,
+            index: 2,
+        }];
+        let to = btc_send::address(&acct, 0, 50).expect("to"); // any signet address
+        let (psbt, plan) = btc_send::build(&acct, &coins, &to, 40_000, 2, 0).expect("build");
+        let qr = export::psbt_to_qr(&psbt.serialize()).expect("qr");
+
+        let review = w.review_btc(qr.clone()).expect("review");
+        assert_eq!(review.txid, plan.txid);
+        assert_eq!(review.amount_sats, 40_000);
+        let last6: String = review
+            .recipient
+            .chars()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        assert!(matches!(
+            w.sign_btc(qr.clone(), review.txid.clone(), "zzzzzz".into()),
+            Err(SignerError::Sign { .. })
+        ));
+        assert!(matches!(
+            w.sign_btc(qr.clone(), "00".repeat(32), last6.clone()),
+            Err(SignerError::Sign { .. })
+        ));
+        let signed_qr = w
+            .sign_btc(qr, review.txid.clone(), last6.to_uppercase())
+            .expect("sign");
+        let signed =
+            btc_send::from_bytes(&export::psbt_from_qr(&signed_qr).expect("bytes")).expect("psbt");
+        let tx = btc_send::finalize(&psbt, &signed).expect("finalize");
+        assert_eq!(tx.compute_txid().to_string(), plan.txid);
+    }
+
     #[test]
     fn end_to_end_through_the_ffi_layer() {
         let dice: String = (0..99)
@@ -291,6 +471,7 @@ mod tests {
         let qr = qr_code(exp).expect("qr");
         assert_eq!(qr.modules.len(), (qr.size * qr.size) as usize);
         let restored = restore_seed(s.words().expect("w")).expect("restore");
+        test_payment_through_the_ffi(&s);
         assert_eq!(
             restored.derive_public(String::new()).expect("p").eth,
             s.derive_public(String::new()).expect("p").eth

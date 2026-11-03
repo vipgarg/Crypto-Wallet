@@ -8,6 +8,8 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64 = "0.22"
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
 chain-btc = { path = "../chain-btc" }
 chain-eth = { path = "../chain-eth" }
 chain-tron = { path = "../chain-tron" }

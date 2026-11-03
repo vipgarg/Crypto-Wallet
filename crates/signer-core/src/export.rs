@@ -2,7 +2,10 @@
 //! the shared `watch-export` crate so the PC can read it without any seed
 //! code; this module re-exports it.
 
-pub use watch_export::{decode, encode, ExportError, WatchOnlyExport, PREFIX};
+pub use watch_export::{
+    decode, decode_test, encode, encode_test, psbt_from_qr, psbt_to_qr, ExportError, TestExport,
+    WatchOnlyExport, PREFIX, PSBT_PREFIX, TEST_PREFIX,
+};
 
 #[cfg(test)]
 mod tests {

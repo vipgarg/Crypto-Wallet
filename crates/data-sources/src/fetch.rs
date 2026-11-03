@@ -638,12 +638,17 @@ pub mod mock {
     pub struct MockHttp {
         pub get: HashMap<String, Result<String, HttpError>>,
         pub post: HashMap<(String, String), Result<Value, HttpError>>,
+        pub post_text: HashMap<(String, String), Result<String, HttpError>>,
         pub log: Mutex<Vec<String>>,
         /// Answers returned in order for a GET URL, before falling back to `get`.
         pub get_seq: Mutex<HashMap<String, VecDeque<Result<String, HttpError>>>>,
     }
 
     impl MockHttp {
+        pub fn on_post_text(&mut self, url: &str, body: &str, answer: Result<String, HttpError>) {
+            self.post_text
+                .insert((url.to_owned(), body.to_owned()), answer);
+        }
         pub fn on_get(&mut self, url: &str, body: &str) {
             self.get.insert(url.to_owned(), Ok(body.to_owned()));
         }
@@ -682,6 +687,15 @@ pub mod mock {
             }
             self.post
                 .get(&(url.to_owned(), body.to_string()))
+                .cloned()
+                .unwrap_or(Err(HttpError::Network("unreachable".into())))
+        }
+        async fn post_text(&self, url: &str, body: &str) -> Result<String, HttpError> {
+            if let Ok(mut l) = self.log.lock() {
+                l.push(format!("POST {url} {body}"));
+            }
+            self.post_text
+                .get(&(url.to_owned(), body.to_owned()))
                 .cloned()
                 .unwrap_or(Err(HttpError::Network("unreachable".into())))
         }
