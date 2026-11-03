@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-address-book-entry"
+description = "Enables the remove_address_book_entry command without any pre-configured scope."
+commands.allow = ["remove_address_book_entry"]
+
+[[permission]]
+identifier = "deny-remove-address-book-entry"
+description = "Denies the remove_address_book_entry command without any pre-configured scope."
+commands.deny = ["remove_address_book_entry"]

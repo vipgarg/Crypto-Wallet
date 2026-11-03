@@ -2,6 +2,7 @@
 //! cross-checked portfolio. There is no secret-handling code in this crate.
 
 pub mod activity;
+pub mod address_book;
 pub mod btc_activity;
 pub mod eth_activity;
 pub mod portfolio;

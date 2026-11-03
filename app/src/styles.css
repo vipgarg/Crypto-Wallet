@@ -42,11 +42,13 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 12px 24px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
-.brand { font-weight: 600; font-size: 16px; }
+.brand { font-weight: 600; font-size: 16px; white-space: nowrap; }
+nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; }
 .tag {
   margin-left: 8px;
   font-size: 12px;
@@ -56,7 +58,7 @@ header {
   padding: 2px 8px;
   border-radius: 10px;
 }
-nav button { margin-left: 4px; background: transparent; color: var(--text); border-color: transparent; }
+nav button { padding-left: 10px; padding-right: 10px; background: transparent; color: var(--text); border-color: transparent; white-space: nowrap; }
 nav button.active { background: var(--accent); color: #fff; }
 main { max-width: 1040px; margin: 0 auto; padding: 16px 24px 48px; }
 h2 { margin: 8px 0; }
@@ -114,8 +116,12 @@ dt { color: var(--muted); }
 dd { margin: 0; }
 table { width: 100%; border-collapse: collapse; background: var(--surface); }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+@media (max-width: 1180px) {
+  .tag { display: none; }
+}
 @media (max-width: 640px) {
   header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  nav { justify-content: flex-start; }
   main { padding: 12px 16px 32px; }
 }
 /* Live progress log */
@@ -198,3 +204,8 @@ iframe#__tauri_isolation__ { display: none; }
 .form label.confirm input { width: auto; margin-top: 3px; }
 .button-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .signer-preview dd { margin-left: 0; }
+
+/* Address book */
+fieldset.plain { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 0 0 10px; }
+fieldset.plain legend { padding: 0 4px; }
+.form label.confirm { font-weight: normal; }

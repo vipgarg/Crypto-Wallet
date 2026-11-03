@@ -25,6 +25,9 @@ use wallet_core::activity::{
     classify_tron_transactions, classify_tron_with_known, known_counterparties, summarize,
     summarize_for, transactions_view, Known, KnownAddress, WalletActivity,
 };
+use wallet_core::address_book::{
+    network_time, usable, AddressBook, NewBookEntry, OwnAddress, Revoked, Usable, WAITING_SECS,
+};
 use wallet_core::btc_activity::{
     classify_btc, known_counterparties_btc, load_btc_history, MAX_PAGES_PER_ADDRESS,
 };
@@ -351,6 +354,25 @@ pub async fn get_activity(
     }
 }
 
+/// Address book entries of `network`, for the look-alike check in history.
+fn book_known(state: &AppState, network: Network) -> Vec<Known> {
+    state
+        .session
+        .with_book(false, |_, b| {
+            Ok(b.entries
+                .iter()
+                .filter(|e| e.network == network)
+                .map(|e| {
+                    (
+                        e.address.clone(),
+                        format!("address book entry \"{}\"", e.label),
+                    )
+                })
+                .collect())
+        })
+        .unwrap_or_default()
+}
+
 fn timeout_msg() -> String {
     "The history provider didn't answer in time.".to_owned()
 }
@@ -395,7 +417,8 @@ async fn tron_activity(
         .map(|t| t.txs.as_slice())
         .unwrap_or(&[]);
     // One look-alike reference list built from both histories.
-    let known = known_counterparties(&me, &own, pinned, &transfers.events, txs);
+    let mut known = known_counterparties(&me, &own, pinned, &transfers.events, txs);
+    known.extend(book_known(state, Network::Tron));
     let entries = classify_tron_with_known(&me, pinned, &transfers.events, &known);
     let mut page = summarize(
         wallet.id.clone(),
@@ -461,7 +484,8 @@ async fn eth_activity(
                 .collect()
         })
     });
-    let known = known_counterparties_eth(&me, &own, usdt, &transfers.value.items, txs);
+    let mut known = known_counterparties_eth(&me, &own, usdt, &transfers.value.items, txs);
+    known.extend(book_known(state, Network::Ethereum));
     let entries =
         classify_eth_transfers(&me, usdt, &transfers.value.items, &known, my_txids.as_ref());
     let mut page = summarize_for(
@@ -495,7 +519,7 @@ async fn btc_activity(
         .as_ref()
         .ok_or_else(|| "This wallet has no Bitcoin key or address.".to_owned())?;
     // Single Bitcoin addresses of your other wallets, for the look-alike check.
-    let own_other: Vec<Known> = registry
+    let mut own_other: Vec<Known> = registry
         .wallets
         .iter()
         .filter(|w| w.id != wallet.id)
@@ -507,6 +531,7 @@ async fn btc_activity(
             _ => None,
         })
         .collect();
+    own_other.extend(book_known(state, Network::Bitcoin));
     let sources = Sources::new(&state.http, &state.config);
     let h = tokio::time::timeout(BTC_ACTIVITY_TIME_LIMIT, load_btc_history(&sources, watch))
         .await
@@ -544,6 +569,252 @@ async fn btc_activity(
         ));
     }
     Ok(page)
+}
+
+// ---------------------------------------------------------------------------
+// Address book (§7.1)
+// ---------------------------------------------------------------------------
+
+/// Your own addresses, for the look-alike and "own wallet" checks. For a
+/// Bitcoin account key, the first receive and change addresses.
+fn own_addresses(registry: &Registry) -> Vec<OwnAddress> {
+    const BTC_OWN_CHECK: u32 = 50;
+    let mut out = Vec::new();
+    for w in &registry.wallets {
+        let label = w.label.clone();
+        if let Some(a) = w.eth {
+            out.push(OwnAddress {
+                network: Network::Ethereum,
+                address: a.to_checksum(),
+                label: label.clone(),
+            });
+        }
+        if let Some(a) = w.tron {
+            out.push(OwnAddress {
+                network: Network::Tron,
+                address: a.to_base58(),
+                label: label.clone(),
+            });
+        }
+        match &w.btc {
+            Some(BtcWatch::Address(a)) => out.push(OwnAddress {
+                network: Network::Bitcoin,
+                address: BtcAddress::to_string(a),
+                label: label.clone(),
+            }),
+            Some(BtcWatch::AccountXpub(x)) => {
+                for chain in [Chain::Receive, Chain::Change] {
+                    for i in 0..BTC_OWN_CHECK {
+                        if let Ok(a) = x.0.derive_address(chain, i) {
+                            out.push(OwnAddress {
+                                network: Network::Bitcoin,
+                                address: a.to_string(),
+                                label: label.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+    out
+}
+
+/// Network time from the latest Ethereum block times (≥ 2 providers agreeing).
+async fn current_network_time(state: &AppState) -> Option<u64> {
+    let sources = Sources::new(&state.http, &state.config);
+    let times = tokio::time::timeout(Duration::from_secs(20), sources.eth_block_times())
+        .await
+        .unwrap_or_default();
+    network_time(&times)
+}
+
+#[derive(Serialize)]
+pub struct BookEntryView {
+    id: String,
+    label: String,
+    network: Network,
+    network_name: &'static str,
+    address: String,
+    verified_by: &'static str,
+    note: String,
+    tiers: Vec<&'static str>,
+    added_at: u64,
+    usable: Usable,
+    /// When this same address was removed before, if ever.
+    previously_removed_at: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct OwnWalletView {
+    label: String,
+    network_name: &'static str,
+    address: String,
+}
+
+#[derive(Serialize)]
+pub struct AddressBookView {
+    entries: Vec<BookEntryView>,
+    own: Vec<OwnWalletView>,
+    revoked: Vec<Revoked>,
+    /// `None` when network time couldn't be confirmed (waiting periods then
+    /// count as not over).
+    network_time: Option<u64>,
+    waiting_hours: u64,
+}
+
+fn book_view(registry: &Registry, book: &AddressBook, now: Option<u64>) -> AddressBookView {
+    let mut own = Vec::new();
+    for w in &registry.wallets {
+        if let Some(a) = w.eth {
+            own.push(OwnWalletView {
+                label: w.label.clone(),
+                network_name: Network::Ethereum.display_name(),
+                address: a.to_checksum(),
+            });
+        }
+        if let Some(a) = w.tron {
+            own.push(OwnWalletView {
+                label: w.label.clone(),
+                network_name: Network::Tron.display_name(),
+                address: a.to_base58(),
+            });
+        }
+        match &w.btc {
+            Some(BtcWatch::Address(a)) => own.push(OwnWalletView {
+                label: w.label.clone(),
+                network_name: Network::Bitcoin.display_name(),
+                address: BtcAddress::to_string(a),
+            }),
+            Some(BtcWatch::AccountXpub(_)) => own.push(OwnWalletView {
+                label: w.label.clone(),
+                network_name: Network::Bitcoin.display_name(),
+                address: "(account key: use a fresh address from the Receive page)".into(),
+            }),
+            None => {}
+        }
+    }
+    AddressBookView {
+        entries: book
+            .entries
+            .iter()
+            .map(|e| BookEntryView {
+                id: e.id.clone(),
+                label: e.label.clone(),
+                network: e.network,
+                network_name: e.network.display_name(),
+                address: e.address.clone(),
+                verified_by: e.verified_by.display_name(),
+                note: e.note.clone(),
+                tiers: e.tiers.iter().map(|t| t.display_name()).collect(),
+                added_at: e.added_at,
+                usable: usable(e, now),
+                previously_removed_at: book
+                    .revoked
+                    .iter()
+                    .rev()
+                    .find(|r| {
+                        r.network == e.network
+                            && r.address == e.address
+                            && r.removed_at <= e.added_at
+                    })
+                    .map(|r| r.removed_at),
+            })
+            .collect(),
+        own,
+        revoked: book.revoked.clone(),
+        network_time: now,
+        waiting_hours: WAITING_SECS / 3600,
+    }
+}
+
+#[tauri::command]
+pub async fn get_address_book(state: State<'_, AppState>) -> Result<AddressBookView, String> {
+    // Login check first, so a locked app doesn't ask the network.
+    state.session.with_book(false, |_, _| Ok(()))?;
+    let now = current_network_time(&state).await;
+    state
+        .session
+        .with_book(false, |r, b| Ok(book_view(r, b, now)))
+}
+
+#[tauri::command]
+pub async fn add_address_book_entry(
+    state: State<'_, AppState>,
+    entry: NewBookEntry,
+) -> Result<AddressBookView, String> {
+    state.session.with_book(false, |_, _| Ok(()))?;
+    let now = current_network_time(&state).await.ok_or_else(|| {
+        "Couldn't confirm the current time from at least two network sources, so the waiting period can't start. Check the internet connection and try again.".to_owned()
+    })?;
+    let (view, detail) = state.session.with_book(true, |r, b| {
+        let e = b
+            .add(&entry, &own_addresses(r), now)
+            .map_err(|e| e.to_string())?;
+        let detail = format!(
+            "{} ({}), may be paid from: {}",
+            e.id,
+            e.network.display_name(),
+            e.tiers
+                .iter()
+                .map(|t| t.display_name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        Ok((book_view(r, b, Some(now)), detail))
+    })?;
+    state.session.audit().record(Event::AddressAdded, &detail);
+    Ok(view)
+}
+
+#[tauri::command]
+pub async fn remove_address_book_entry(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<AddressBookView, String> {
+    if id.len() > 16 {
+        return Err("Unknown entry.".into());
+    }
+    state.session.with_book(false, |_, _| Ok(()))?;
+    let now_net = current_network_time(&state).await;
+    let pc_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (view, detail) = state.session.with_book(true, |r, b| {
+        let e = b
+            .remove(&id, now_net.unwrap_or(pc_now))
+            .map_err(|e| e.to_string())?;
+        Ok((
+            book_view(r, b, now_net),
+            format!("{} ({})", e.id, e.network.display_name()),
+        ))
+    })?;
+    state.session.audit().record(Event::AddressRemoved, &detail);
+    Ok(view)
+}
+
+#[tauri::command]
+pub async fn rename_address_book_entry(
+    state: State<'_, AppState>,
+    id: String,
+    label: String,
+) -> Result<AddressBookView, String> {
+    if id.len() > 16 {
+        return Err("Unknown entry.".into());
+    }
+    state.session.with_book(false, |_, _| Ok(()))?;
+    let now = current_network_time(&state).await;
+    let view = state.session.with_book(true, |r, b| {
+        b.rename(&id, &label).map_err(|e| e.to_string())?;
+        Ok(book_view(r, b, now))
+    })?;
+    state
+        .session
+        .audit()
+        .record(Event::AddressRenamed, &format!("{id} (label changed)"));
+    Ok(view)
 }
 
 #[tauri::command]
@@ -971,7 +1242,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            17,
+            21,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

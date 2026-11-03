@@ -21,6 +21,7 @@ use auth::lockout::Lockout;
 use auth::store::{self, KdfParams, StoreError};
 use auth::totp;
 use serde::{Deserialize, Serialize};
+use wallet_core::address_book::AddressBook;
 use wallet_core::Registry;
 use zeroize::Zeroizing;
 
@@ -39,10 +40,14 @@ struct StoreContents {
     registry: Registry,
     totp_secret: String,
     totp_last_step: u64,
+    /// Added later; older stores load with an empty book.
+    #[serde(default)]
+    address_book: AddressBook,
 }
 
 struct Unlocked {
     registry: Registry,
+    address_book: AddressBook,
     key: Zeroizing<[u8; 32]>,
     kdf: KdfParams,
     totp_secret: Zeroizing<Vec<u8>>,
@@ -193,6 +198,7 @@ impl SessionState {
         let key = store::derive_key(password, &kdf).map_err(|e| e.to_string())?;
         let unlocked = Unlocked {
             registry,
+            address_book: AddressBook::default(),
             key,
             kdf,
             totp_secret: secret,
@@ -222,6 +228,7 @@ impl SessionState {
             registry: u.registry.clone(),
             totp_secret: totp::secret_base32(&u.totp_secret).to_string(),
             totp_last_step: u.totp_last_step,
+            address_book: u.address_book.clone(),
         };
         let bytes = store::seal(&u.key, &u.kdf, &contents).map_err(|e| e.to_string())?;
         store::write_atomic(&self.paths.store, &bytes).map_err(|e| e.to_string())
@@ -274,6 +281,7 @@ impl SessionState {
         self.write_lockout(&lockout);
         let unlocked = Unlocked {
             registry: contents.registry,
+            address_book: contents.address_book,
             key,
             kdf,
             totp_secret: secret,
@@ -306,6 +314,40 @@ impl SessionState {
                 }
             }
         }
+    }
+
+    /// Run `f` on the address book (with the wallet list for reference) if
+    /// unlocked. With `save`, the change is encrypted and written first.
+    pub fn with_book<T>(
+        &self,
+        save: bool,
+        f: impl FnOnce(&Registry, &mut AddressBook) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut s = self.inner.lock().map_err(|_| INTERNAL.to_owned())?;
+        let Session::Unlocked(u) = &mut *s else {
+            return Err(LOCKED_MSG.into());
+        };
+        if u.last_activity.elapsed() > IDLE_LOCK {
+            *s = Session::Locked;
+            self.audit.record(
+                Event::IdleLocked,
+                &format!("no activity for {} minutes", IDLE_LOCK.as_secs() / 60),
+            );
+            return Err(LOCKED_MSG.into());
+        }
+        u.last_activity = Instant::now();
+        if !save {
+            let mut book = u.address_book.clone();
+            return f(&u.registry, &mut book);
+        }
+        let mut next = u.address_book.clone();
+        let out = f(&u.registry, &mut next)?;
+        let previous = std::mem::replace(&mut u.address_book, next);
+        if let Err(e) = self.persist(u) {
+            u.address_book = previous;
+            return Err(e);
+        }
+        Ok(out)
     }
 
     /// Run `f` on the wallet list if unlocked (and not idle for too long).

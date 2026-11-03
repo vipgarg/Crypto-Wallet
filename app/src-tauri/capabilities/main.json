@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The only capability: the main window may call the seventeen reviewed app commands. No core plugins, no shell, fs, http, opener or updater.",
+  "description": "The only capability: the main window may call the twenty-one reviewed app commands. No core plugins, no shell, fs, http, opener or updater.",
   "local": true,
   "windows": ["main"],
   "permissions": [
@@ -21,6 +21,10 @@
     "allow-get-receive",
     "allow-preview-signer-wallet",
     "allow-add-signer-wallet",
-    "allow-get-audit-log"
+    "allow-get-audit-log",
+    "allow-get-address-book",
+    "allow-add-address-book-entry",
+    "allow-remove-address-book-entry",
+    "allow-rename-address-book-entry"
   ]
 }

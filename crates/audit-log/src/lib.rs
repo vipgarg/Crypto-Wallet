@@ -46,6 +46,10 @@ pub enum Event {
     IdleLocked,
     WalletAdded,
     WalletRemoved,
+    /// Address book entry added / removed / renamed (id and network only).
+    AddressAdded,
+    AddressRemoved,
+    AddressRenamed,
     /// PC safety checks reported a failure or warning.
     ChecksProblem,
 }

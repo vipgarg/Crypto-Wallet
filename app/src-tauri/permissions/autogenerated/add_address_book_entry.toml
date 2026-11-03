@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-add-address-book-entry"
+description = "Enables the add_address_book_entry command without any pre-configured scope."
+commands.allow = ["add_address_book_entry"]
+
+[[permission]]
+identifier = "deny-add-address-book-entry"
+description = "Denies the add_address_book_entry command without any pre-configured scope."
+commands.deny = ["add_address_book_entry"]

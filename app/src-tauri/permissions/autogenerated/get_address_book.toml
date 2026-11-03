@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-address-book"
+description = "Enables the get_address_book command without any pre-configured scope."
+commands.allow = ["get_address_book"]
+
+[[permission]]
+identifier = "deny-get-address-book"
+description = "Denies the get_address_book command without any pre-configured scope."
+commands.deny = ["get_address_book"]

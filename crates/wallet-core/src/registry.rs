@@ -103,7 +103,7 @@ pub enum RegistryError {
 
 /// Rough check for pasted secrets: many words (a mnemonic), a 64-hex private
 /// key, or a WIF key. Fail closed: refuse and warn.
-fn looks_like_secret(s: &str) -> bool {
+pub(crate) fn looks_like_secret(s: &str) -> bool {
     let t = s.trim();
     let words = t.split_whitespace().count();
     let hex64 = {
@@ -212,7 +212,7 @@ pub fn from_signer_export(text: &str) -> Result<WatchWallet, RegistryError> {
 }
 
 /// Wrong-network detection (§7 ②): explain when an address belongs elsewhere.
-fn cross_network_hint(v: &str) -> Option<String> {
+pub(crate) fn cross_network_hint(v: &str) -> Option<String> {
     if v.parse::<TronAddress>().is_ok() {
         return Some("that's a TRON address; put it in the TRON field".into());
     }

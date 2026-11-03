@@ -76,6 +76,10 @@ pub fn run() {
             commands::preview_signer_wallet,
             commands::add_signer_wallet,
             commands::get_audit_log,
+            commands::get_address_book,
+            commands::add_address_book_entry,
+            commands::remove_address_book_entry,
+            commands::rename_address_book_entry,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

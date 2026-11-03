@@ -99,6 +99,42 @@ export interface AuditView {
   entries: AuditEntry[];
 }
 
+export type VerifiedBy = "phone_call" | "second_channel" | "test_transaction" | "own_account_elsewhere";
+
+export type Usable = { kind: "yes" } | { kind: "waiting"; from: number } | { kind: "unknown"; from: number };
+
+export interface BookEntryView {
+  id: string;
+  label: string;
+  network: HistoryNetwork;
+  network_name: string;
+  address: string;
+  verified_by: string;
+  note: string;
+  tiers: string[];
+  added_at: number;
+  usable: Usable;
+  previously_removed_at: number | null;
+}
+
+export interface AddressBookView {
+  entries: BookEntryView[];
+  own: { label: string; network_name: string; address: string }[];
+  revoked: { network: HistoryNetwork; address: string; label: string; removed_at: number }[];
+  network_time: number | null;
+  waiting_hours: number;
+}
+
+export interface NewBookEntry {
+  label: string;
+  network: HistoryNetwork;
+  address: string;
+  verified_by: VerifiedBy;
+  note: string;
+  tiers: Tier[];
+  written_on_paper: boolean;
+}
+
 export interface NewWalletInput {
   id: string;
   label: string;
@@ -276,6 +312,11 @@ export const api = {
   previewSignerWallet: (text: string) => call<SignerWalletPreview>("preview_signer_wallet", { text }),
   addSignerWallet: (text: string) => call<WalletView[]>("add_signer_wallet", { text }),
   getAuditLog: () => call<AuditView>("get_audit_log"),
+  getAddressBook: () => call<AddressBookView>("get_address_book"),
+  addAddressBookEntry: (entry: NewBookEntry) => call<AddressBookView>("add_address_book_entry", { entry }),
+  removeAddressBookEntry: (id: string) => call<AddressBookView>("remove_address_book_entry", { id }),
+  renameAddressBookEntry: (id: string, label: string) =>
+    call<AddressBookView>("rename_address_book_entry", { id, label }),
 };
 
 export function errorText(e: unknown): string {

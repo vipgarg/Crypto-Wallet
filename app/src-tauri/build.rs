@@ -20,6 +20,10 @@ const COMMANDS: &[&str] = &[
     "preview_signer_wallet",
     "add_signer_wallet",
     "get_audit_log",
+    "get_address_book",
+    "add_address_book_entry",
+    "remove_address_book_entry",
+    "rename_address_book_entry",
 ];
 
 fn main() {
