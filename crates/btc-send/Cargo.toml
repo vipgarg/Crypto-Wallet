@@ -1,0 +1,19 @@
+[package]
+name = "btc-send"
+version = "0.1.0"
+description = "PC side of Bitcoin sending: builds the unsigned PSBT for the signer tablet and checks/finalises what it returns. Test network (signet) only for now. No keys."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+signer-core = { path = "../signer-core" }
+
+[lints]
+workspace = true

@@ -416,6 +416,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "btc-send"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "serde",
+ "signer-core",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

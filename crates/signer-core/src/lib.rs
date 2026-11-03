@@ -11,9 +11,10 @@
 //! - `vault`: one encrypted file per stored wallet (§6.4).
 //! - `export`: the watch-only export the tablet shows as a QR code for the PC.
 //!
-//! Signing is **not** in this crate yet (later in Phase 2, testnets first).
+//! - `btc_sign`: Bitcoin signing, **signet (test network) only** in this build.
 
 pub mod accounts;
+pub mod btc_sign;
 pub mod entropy;
 pub mod export;
 pub mod seed;

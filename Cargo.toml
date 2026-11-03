@@ -11,6 +11,7 @@ members = [
     "crates/audit-log",
     "crates/sys-checks",
     "crates/watch-export",
+    "crates/btc-send",
     "crates/signer-core",
     "crates/signer-ffi",
     "app/src-tauri",
