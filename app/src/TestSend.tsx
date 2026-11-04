@@ -139,6 +139,19 @@ export function TestSendPage() {
             </button>
           </div>
         )}
+        {(() => {
+          const w = wallets.find((x) => x.id === selected);
+          if (!w || view) return null;
+          return (
+            <div>
+              <p className="hint">
+                Test receive address #0 for the faucet (signet addresses start with <strong>tb1</strong>; the Receive
+                page shows <em>real</em> Bitcoin addresses starting with bc1, which a test faucet refuses):
+              </p>
+              <ChunkedAddress a={w.first_receive_address} />
+            </div>
+          );
+        })()}
         {adding === "no" && (
           <div className="button-row">
             <button className="secondary" onClick={() => setAdding("scan")}>
@@ -198,8 +211,9 @@ export function TestSendPage() {
           <p className="hint">Receive test coins at (receive address #{view.receive_index}):</p>
           <ChunkedAddress a={view.receive_address} />
           <p className="hint">
-            Free test coins: open a signet faucet in your browser (for example signetfaucet.com), paste this address,
-            then press "Check balance" after about 10 minutes (1 confirmation).
+            Free test coins: open a signet faucet in your browser (for example signetfaucet.com or
+            bitcoinsignetfaucet.com), paste this <strong>tb1…</strong> address, then press "Check balance" after about
+            10 minutes (1 confirmation). Don't use the Receive page for this: it shows real Bitcoin addresses (bc1…).
           </p>
         </div>
       )}

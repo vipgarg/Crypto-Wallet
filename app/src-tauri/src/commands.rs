@@ -829,6 +829,10 @@ pub struct TestWalletSummary {
     id: String,
     label: String,
     fingerprint: String,
+    /// Test receive address #0 (tb1…), derived on this PC without asking
+    /// any server, so it can be given to a faucet even when the signet
+    /// servers are busy.
+    first_receive_address: String,
 }
 
 fn test_summaries(ws: &[TestWallet]) -> Vec<TestWalletSummary> {
@@ -837,6 +841,11 @@ fn test_summaries(ws: &[TestWallet]) -> Vec<TestWalletSummary> {
             id: w.id.clone(),
             label: w.label.clone(),
             fingerprint: w.fingerprint.clone(),
+            first_receive_address: w
+                .account()
+                .and_then(|a| btc_send::address(&a, 0, 0).map_err(|e| e.to_string()))
+                .map(|a| a.to_string())
+                .unwrap_or_default(),
         })
         .collect()
 }

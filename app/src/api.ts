@@ -139,6 +139,8 @@ export interface TestWalletSummary {
   id: string;
   label: string;
   fingerprint: string;
+  /** Test receive address #0 (tb1…), worked out on the PC. */
+  first_receive_address: string;
 }
 
 export interface TestWalletView {
