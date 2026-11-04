@@ -88,7 +88,7 @@ export function TestSendPage() {
   };
 
   const scan = async () => {
-    const v = await run("Checking balance on both signet sources…", () => api.scanTestWallet(selected));
+    const v = await run("Checking balance on both signet sources (about 20–40 seconds, requests are spaced out)…", () => api.scanTestWallet(selected));
     if (v) setView(v);
   };
 
