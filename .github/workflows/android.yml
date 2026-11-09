@@ -62,13 +62,37 @@ jobs:
         with:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
+      # With the owner's signing key (GitHub secrets), the APK is a release
+      # build signed with that fixed key, so updates install over the old app
+      # and keep its wallets. Without it, a debug build (new key every run).
       - name: Build APK
         working-directory: android
-        run: gradle assembleDebug --no-daemon --stacktrace
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNER_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SIGNER_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNER_KEY_ALIAS }}
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)"
+          if [ -n "$KEYSTORE_B64" ]; then
+            gradle assembleRelease --no-daemon --stacktrace
+            KS="$RUNNER_TEMP/signer.jks"
+            echo "$KEYSTORE_B64" | base64 -d > "$KS"
+            "$BT/zipalign" -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
+            "$BT/apksigner" sign --ks "$KS" --ks-pass env:KEYSTORE_PASSWORD --ks-key-alias "$KEY_ALIAS" \
+              --out "$RUNNER_TEMP/signed.apk" "$RUNNER_TEMP/aligned.apk"
+            rm -f "$KS"
+            "$BT/apksigner" verify --print-certs "$RUNNER_TEMP/signed.apk" | grep -i "SHA-256" | tee "$RUNNER_TEMP/cert.txt"
+            echo "APK=$RUNNER_TEMP/signed.apk" >> "$GITHUB_ENV"
+            echo "APK_KIND=release, signed with the owner's key" >> "$GITHUB_ENV"
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+            echo "APK=$GITHUB_WORKSPACE/android/app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+            echo "APK_KIND=debug (no signing key set: updates need an uninstall)" >> "$GITHUB_ENV"
+          fi
 
       - name: Guard - only the reviewed permissions, never internet
         run: |
-          APK=android/app/build/outputs/apk/debug/app-debug.apk
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           AAPT2="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)/aapt2"
           "$AAPT2" dump permissions "$APK" | tee permissions.txt
@@ -78,7 +102,7 @@ jobs:
           fi
           # Exactly these may be requested (a library adding any other
           # permission fails the build until it is reviewed).
-          ALLOWED='^(android\.permission\.ACCESS_NETWORK_STATE|android\.permission\.CAMERA|com\.vipgarg\.walletsigner\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION)$'
+          ALLOWED='^(android\.permission\.ACCESS_NETWORK_STATE|android\.permission\.CAMERA|android\.permission\.DETECT_SCREEN_RECORDING|com\.vipgarg\.walletsigner\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION)$'
           grep "^uses-permission:" permissions.txt | sed -E "s/.*name='([^']+)'.*/\1/" | sort -u > requested.txt
           cat requested.txt
           if grep -Ev "$ALLOWED" requested.txt; then
@@ -90,7 +114,8 @@ jobs:
         run: |
           mkdir -p out
           NAME="wallet-signer-testnet-${GITHUB_SHA::7}.apk"
-          cp android/app/build/outputs/apk/debug/app-debug.apk "out/$NAME"
+          cp "$APK" "out/$NAME"
+          echo "Build: $APK_KIND"
           (cd out && sha256sum "$NAME" | tee "$NAME.sha256")
 
       - uses: actions/upload-artifact@v4

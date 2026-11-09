@@ -25,7 +25,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -77,16 +79,33 @@ private sealed interface Screen {
 @Composable
 fun SignerApp(store: WalletStore) {
     var screen by remember { mutableStateOf<Screen>(Screen.Checks) }
+    val secureFocus = remember { SecureFocus() }
     MaterialTheme {
+        CompositionLocalProvider(LocalSecureFocus provides secureFocus) {
         Surface(modifier = Modifier.fillMaxSize()) {
+          Column(modifier = Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                when (val s = screen) {
+                if (Safety.blocked) {
+                    // Hide everything (secrets included) while recorded or cast.
+                    LaunchedEffect(Unit) { secureFocus.close() }
+                    Title("Stopped: the screen may be recorded or shown elsewhere")
+                    Hint(
+                        if (Safety.screenRecorded) {
+                            "Screen recording of this app was detected. Stop the recording to continue."
+                        } else {
+                            "The screen is being cast or mirrored to another display. Stop casting to continue."
+                        },
+                        BAD,
+                    )
+                    Hint("Nothing is shown while this lasts. This tablet should never record or cast its screen.")
+                } else when (val s = screen) {
                     Screen.Checks -> ChecksScreen(onPassed = { screen = Screen.Home })
                     Screen.Home -> HomeScreen(
                         store = store,
@@ -114,6 +133,9 @@ fun SignerApp(store: WalletStore) {
                     is Screen.ShowQr -> QrScreen(s.title, s.text, s.note, onBack = { screen = Screen.Home })
                 }
             }
+            SecureKeyboardHost()
+          }
+        }
         }
     }
 }
@@ -258,13 +280,14 @@ private fun CreateWallet(
             var rolls by remember { mutableStateOf("") }
             val count = rolls.count { it in '1'..'6' }
             Hint("Roll a normal six-sided die at least 99 times and type each result (1-6). Spaces are fine.")
-            OutlinedTextField(
-                rolls,
-                { rolls = it.filter { c -> c in '1'..'6' || c == ' ' } },
-                label = { Text("Dice rolls ($count of 99)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, autoCorrectEnabled = false),
-                minLines = 4,
-                modifier = Modifier.fillMaxWidth(),
+            SecureInput(
+                key = "dice",
+                value = rolls,
+                onChange = { rolls = it.filter { c -> c in '1'..'6' || c == ' ' } },
+                label = "Dice rolls ($count of 99)",
+                layout = KeyLayout.DICE,
+                masked = false,
+                maxLength = 400,
             )
             Button(onClick = {
                 try {
@@ -296,29 +319,31 @@ private fun CreateWallet(
             (0 until count).chunked(2).forEach { pair ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     pair.forEach { i ->
-                        OutlinedTextField(
-                            words[i],
-                            { v -> words[i] = v.filter { !it.isWhitespace() }.lowercase(); restoreError = null },
-                            label = { Text("#${i + 1}") },
-                            singleLine = true,
-                            visualTransformation =
-                                if (visible == i) VisualTransformation.None else PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Password,
-                                autoCorrectEnabled = false,
-                                imeAction = if (i == count - 1) ImeAction.Done else ImeAction.Next,
-                            ),
-                            trailingIcon = {
-                                TextButton(onClick = { visible = if (visible == i) -1 else i }) {
-                                    Text(if (visible == i) "Hide" else "Show")
-                                }
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .onFocusChanged { f ->
-                                    if (f.isFocused) visible = i else if (visible == i) visible = -1
-                                },
-                        )
+                        val focusKey = "w$i"
+                        val activeKey = LocalSecureFocus.current.activeKey
+                        val typingWord = activeKey?.startsWith("w") == true
+                        val focus = LocalSecureFocus.current
+                        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                            SecureInput(
+                                key = focusKey,
+                                value = words[i],
+                                onChange = { v -> words[i] = v; restoreError = null },
+                                label = "#${i + 1}",
+                                layout = KeyLayout.WORD,
+                                // Readable only while typed in, or after "Show" (one at a time).
+                                // While typing, only the box being typed in; otherwise
+                                // only the one whose "Show" was tapped.
+                                masked = if (typingWord) activeKey != focusKey else visible != i,
+                                maxLength = 12,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = {
+                                focus.close()
+                                visible = if (visible == i) -1 else i
+                            }) {
+                                Text(if (visible == i && !typingWord) "Hide" else "Show")
+                            }
+                        }
                     }
                     if (pair.size == 1) Spacer(Modifier.weight(1f))
                 }
@@ -369,12 +394,14 @@ private fun CreateWallet(
             val answers = remember(positions) { positions.map { mutableStateOf("") } }
             Hint("Type these words from your paper to check it.")
             positions.forEachIndexed { i, p ->
-                OutlinedTextField(
-                    answers[i].value,
-                    { answers[i].value = it.trim().lowercase() },
-                    label = { Text("Word #$p") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                SecureInput(
+                    key = "check$i",
+                    value = answers[i].value,
+                    onChange = { answers[i].value = it },
+                    label = "Word #$p",
+                    layout = KeyLayout.WORD,
+                    masked = false,
+                    maxLength = 12,
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -473,14 +500,14 @@ private fun CreateWallet(
 
 @Composable
 internal fun SecretField(value: String, onChange: (String) -> Unit, label: String) {
-    OutlinedTextField(
-        value,
-        onChange,
-        label = { Text(label) },
-        singleLine = true,
-        visualTransformation = PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-        modifier = Modifier.fillMaxWidth(),
+    // Typed on the app's own keyboard only; shown as dots.
+    SecureInput(
+        key = "secret:$label",
+        value = value,
+        onChange = onChange,
+        label = label,
+        layout = KeyLayout.TEXT,
+        masked = true,
     )
 }
 

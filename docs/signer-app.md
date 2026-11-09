@@ -50,8 +50,6 @@ Built by `.github/workflows/android.yml` (decision: Option A, GitHub Actions).
 - **Known limits of this first build (to fix before real funds):**
   - Debug-signed: GitHub's runner creates a new debug key each run, so installing a newer build means **uninstalling the old one, which deletes the test wallets** on the tablet (restore them from their words). A fixed release signing key comes later.
   - Passwords, passphrases and words typed in the app pass through Kotlin strings, which the JVM can't wipe from memory (the Rust side wipes its copies).
-  - The system keyboard is used (with suggestions off); the in-app keyboard is still to do.
-  - Not yet checked at start-up: verified-boot state (key attestation) and screen recording.
 
 ## Test network screens (Phase 2)
 
@@ -63,6 +61,15 @@ Wallet → **Test network (signet)** (Spending/Savings wallets): unlock with the
 - **Sign a test payment**: the camera reads the PC's payment QR (CameraX + ZXing, offline). The tablet shows network, recipient (grouped, bold ends), amount, fee, change and the transaction ID start, all worked out on the tablet. You type the recipient's **last 6 characters from your paper**; then it signs and shows the signed QR for the PC.
 - The wallet locks again (key material wiped) when you leave the screen.
 - Permissions: **CAMERA** is added (QR reading only). The build fails if the APK requests INTERNET or any permission not on the reviewed list.
+
+## Hardening (built)
+
+| Item | What it does |
+|---|---|
+| App keyboard | Seed words (a–z only), passwords and passphrases (letters, Shift, digits, symbols), dice (1–6) and the approval characters are typed on the app's own keyboard, docked at the bottom. The system keyboard never opens for them, so nothing is learned, suggested or sent. Wallet ID and label (not secret) still use the system keyboard. |
+| Screen recording / casting | Android 15's screen-recording callback (`DETECT_SCREEN_RECORDING` permission) and a presentation-display listener: while recorded or cast, every screen is hidden. `FLAG_SECURE` already blanks screenshots and recordings. |
+| Tamper check (verified boot) | Start-up check (critical): the secure hardware creates a throw-away key with a fresh challenge; the certificate chain must verify up to one of Google's pinned attestation roots (RSA root and "Key Attestation CA1", from github.com/android/keyattestation `roots.json`); the Rust core reads the root of trust: bootloader **locked** and verified boot **Verified** are required. Tested against real attestations from Google's test data (a locked Pixel passes, an unlocked one fails). Limit: attestation-key revocation can't be checked offline. |
+| Fixed signing key | When the repository has the secrets `SIGNER_KEYSTORE_B64`, `SIGNER_KEYSTORE_PASSWORD` and `SIGNER_KEY_ALIAS`, CI builds a **release** APK (not debuggable) signed with that key, so updates install with `adb install -r` and keep the wallets. Without them, a debug build as before. Still to do once the key exists: the app checks its own signing-certificate fingerprint at start. |
 
 ## Installing a test build on the tablet
 

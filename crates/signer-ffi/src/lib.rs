@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use signer_core::{accounts, btc_sign, entropy, export, seed, tron_sign, vault};
+use signer_core::{accounts, attestation, btc_sign, entropy, export, seed, tron_sign, vault};
 use wallet_types::{Tier, WalletId};
 use zeroize::Zeroizing;
 
@@ -443,6 +443,29 @@ pub fn qr_code(text: String) -> Result<QrRecord, SignerError> {
             .map(|c| c == qrcode::Color::Dark)
             .collect(),
     })
+}
+
+/// Result of the tamper check (key attestation).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AttestationRecord {
+    pub passed: bool,
+    pub detail: String,
+}
+
+/// Read the attestation extension of a key certificate whose chain the
+/// Android side has already checked up to a pinned Google root.
+#[uniffi::export]
+pub fn check_attestation(extension: Vec<u8>, challenge: Vec<u8>) -> AttestationRecord {
+    match attestation::parse(&extension, &challenge) {
+        Ok(a) => {
+            let (passed, detail) = a.verdict();
+            AttestationRecord { passed, detail }
+        }
+        Err(e) => AttestationRecord {
+            passed: false,
+            detail: format!("Tamper check failed: {e}."),
+        },
+    }
 }
 
 /// Bitcoin receive address #index (for "verify on signer").

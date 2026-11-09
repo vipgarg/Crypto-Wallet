@@ -16,9 +16,10 @@ data class Check(
 )
 
 /**
- * Checks that the tablet is offline and not open to screen-reading or
- * debugging tools. Not yet implemented: verified-boot state via key
- * attestation, and screen-recording detection (see docs/signer-app.md).
+ * Checks that the tablet is offline, not open to screen-reading or
+ * debugging tools, not modified (verified boot, via key attestation) and not
+ * casting its screen. Screen recording is watched continuously
+ * (MainActivity / Safety).
  */
 fun runChecks(context: Context): List<Check> {
     val cr = context.contentResolver
@@ -65,6 +66,21 @@ fun runChecks(context: Context): List<Check> {
         "No SIM card",
         !simPresent,
         if (simPresent) "Remove the SIM card." else "None.",
+        critical = true,
+    )
+
+    val (untampered, tamperDetail) = TamperCheck.run()
+    checks += Check(
+        "System not modified (verified boot)",
+        untampered,
+        tamperDetail,
+        critical = true,
+    )
+
+    checks += Check(
+        "Screen not cast or mirrored",
+        !Safety.externalDisplay,
+        if (Safety.externalDisplay) "The screen is being shown on another display. Stop casting." else "Not cast.",
         critical = true,
     )
 

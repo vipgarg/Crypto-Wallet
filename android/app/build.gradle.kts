@@ -22,6 +22,11 @@ android {
         debug {
             isMinifyEnabled = false
         }
+        // Signed in CI with the owner's key (see docs/signer-app.md). Not
+        // minified: the Rust bridge (UniFFI + JNA) is called by name.
+        release {
+            isMinifyEnabled = false
+        }
     }
 
     compileOptions {

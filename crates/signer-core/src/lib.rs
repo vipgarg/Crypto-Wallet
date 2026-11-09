@@ -15,6 +15,7 @@
 //! - `tron_sign`: TRON USDT signing, **Nile (test network) only** in this build.
 
 pub mod accounts;
+pub mod attestation;
 pub mod btc_sign;
 pub mod entropy;
 pub mod export;

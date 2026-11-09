@@ -162,12 +162,14 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
             }
             HorizontalDivider()
             Hint("To approve, type the LAST 6 characters of the recipient address from your PAPER address book (not from either screen).")
-            OutlinedTextField(
-                typed,
-                { typed = it.filter { c -> c.isLetterOrDigit() }.take(6) },
-                label = { Text("Last 6 characters") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+            SecureInput(
+                key = "last6",
+                value = typed,
+                onChange = { typed = it.filter { c -> c.isLetterOrDigit() }.take(6) },
+                label = "Last 6 characters",
+                layout = KeyLayout.TEXT,
+                masked = false,
+                maxLength = 6,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { step = TestStep.Menu }) { Text("Reject") }
@@ -223,12 +225,14 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
             }
             HorizontalDivider()
             Hint("To approve, type the LAST 6 characters of the recipient address from your PAPER address book. TRON addresses are case-sensitive (capital and small letters must match).")
-            OutlinedTextField(
-                typed,
-                { typed = it.filter { c -> c.isLetterOrDigit() }.take(6) },
-                label = { Text("Last 6 characters") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+            SecureInput(
+                key = "last6",
+                value = typed,
+                onChange = { typed = it.filter { c -> c.isLetterOrDigit() }.take(6) },
+                label = "Last 6 characters",
+                layout = KeyLayout.TEXT,
+                masked = false,
+                maxLength = 6,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { step = TestStep.Menu }) { Text("Reject") }

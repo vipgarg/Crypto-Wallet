@@ -10,6 +10,8 @@
 
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Android 15+: lets the app see that its own screen is being recorded. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_RECORDING" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application
