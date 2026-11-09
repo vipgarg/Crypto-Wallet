@@ -28,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.signer_ffi.BtcReviewRecord
+import uniffi.signer_ffi.TronReviewRecord
 import uniffi.signer_ffi.UnlockedWallet
 import uniffi.signer_ffi.unlockVault
 
@@ -37,6 +38,9 @@ private sealed interface TestStep {
     data object Scan : TestStep
     data class Review(val request: String, val review: BtcReviewRecord) : TestStep
     data class Signed(val text: String, val review: BtcReviewRecord) : TestStep
+    data object TronScan : TestStep
+    data class TronReview(val request: String, val review: TronReviewRecord) : TestStep
+    data class TronSigned(val text: String, val review: TronReviewRecord) : TestStep
 }
 
 private fun sats(v: ULong): String {
@@ -63,8 +67,8 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
 
     DisposableEffect(Unit) { onDispose { wallet?.close() } }
 
-    Title("Test network: ${entry.label}")
-    Hint("Bitcoin signet: test coins with no value. Practise here before any real signing exists.", WARN)
+    Title("Test networks: ${entry.label}")
+    Hint("TRON Nile and Bitcoin signet: test coins with no value. Practise here before any real signing exists.", WARN)
     error?.let { Hint(it, BAD) }
     busy?.let { Hint(it) }
 
@@ -108,7 +112,8 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     .onSuccess { step = TestStep.ShowExport(it) }
                     .onFailure { error = it.message }
             }) { Text("Show test export QR (for the PC)") }
-            Button(onClick = { error = null; step = TestStep.Scan }) { Text("Sign a test payment") }
+            Button(onClick = { error = null; step = TestStep.TronScan }) { Text("Sign a TRON test payment (Nile USDT)") }
+            OutlinedButton(onClick = { error = null; step = TestStep.Scan }) { Text("Sign a Bitcoin test payment (signet)") }
             OutlinedButton(onClick = onBack) { Text("Lock and go back") }
         }
 
@@ -178,6 +183,74 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     }
                 }) { Text("Approve and sign") }
             }
+        }
+
+        TestStep.TronScan -> {
+            Hint("On the PC: Test send → USDT on TRON Nile → Build payment. Then scan the QR it shows.")
+            QrScanner(
+                prefix = "WTR1:",
+                wrongHint = "That isn't a TRON payment request from the PC (it should start with WTR1).",
+                onResult = { text ->
+                    busy = "Checking the payment…"
+                    scope.launch {
+                        val r = withContext(Dispatchers.Default) {
+                            runCatching { w.reviewTron(text, System.currentTimeMillis().toULong()) }
+                        }
+                        busy = null
+                        r.onSuccess { step = TestStep.TronReview(text, it) }
+                            .onFailure { error = it.message; step = TestStep.Menu }
+                    }
+                },
+                onCancel = { step = TestStep.Menu },
+            )
+        }
+
+        is TestStep.TronReview -> {
+            var typed by remember(s) { mutableStateOf("") }
+            val r = s.review
+            Text("Check every line against the PC and your paper", fontWeight = FontWeight.SemiBold)
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(r.network)
+                    Text("Token: test USDT (TRC-20)")
+                    Text("Recipient", fontWeight = FontWeight.SemiBold)
+                    GroupedAddress(r.recipient)
+                    Text("Amount: ${r.amountUsdt} test USDT", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Fee limit: up to ${r.feeLimitTrx} test TRX")
+                    Text("From this wallet: ${r.from}", fontFamily = FontFamily.Monospace)
+                    Text("Transaction ID starts with: ${r.txid.take(8)}", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+            }
+            HorizontalDivider()
+            Hint("To approve, type the LAST 6 characters of the recipient address from your PAPER address book. TRON addresses are case-sensitive (capital and small letters must match).")
+            OutlinedTextField(
+                typed,
+                { typed = it.filter { c -> c.isLetterOrDigit() }.take(6) },
+                label = { Text("Last 6 characters") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { step = TestStep.Menu }) { Text("Reject") }
+                Button(enabled = typed.length == 6 && busy == null, onClick = {
+                    busy = "Signing…"
+                    scope.launch {
+                        val res = withContext(Dispatchers.Default) {
+                            runCatching { w.signTron(s.request, r.txid, typed, System.currentTimeMillis().toULong()) }
+                        }
+                        busy = null
+                        res.onSuccess { step = TestStep.TronSigned(it, r) }
+                            .onFailure { error = it.message }
+                    }
+                }) { Text("Approve and sign") }
+            }
+        }
+
+        is TestStep.TronSigned -> {
+            Text("Signed", fontWeight = FontWeight.SemiBold, color = OK)
+            Hint("On the PC: Scan the signed QR from the tablet. Transaction ID starts with ${s.review.txid.take(8)}.")
+            QrImage(s.text)
+            OutlinedButton(onClick = { step = TestStep.Menu }) { Text("Done") }
         }
 
         is TestStep.Signed -> {

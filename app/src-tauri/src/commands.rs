@@ -43,6 +43,7 @@ use zeroize::Zeroizing;
 
 use crate::session::{AuthStatus, SessionState, Settings, SetupInfo};
 use crate::testnet::{self, PendingSend, SentView, TestWallet, TestWalletView};
+use crate::tron_test;
 
 pub struct AppState {
     /// Login state and the encrypted wallet list (session.rs).
@@ -54,6 +55,8 @@ pub struct AppState {
     pub last_check_problems: Mutex<Option<String>>,
     /// A test payment built here and waiting for the tablet's signature.
     pub pending_send: Mutex<Option<PendingSend>>,
+    /// A TRON (Nile) test payment waiting for the tablet's signature.
+    pub pending_tron: Mutex<Option<PendingTron>>,
 }
 
 /// A whole refresh is stopped after this long; whatever hasn't answered by
@@ -1021,6 +1024,136 @@ pub async fn finish_test_send(
 }
 
 // ---------------------------------------------------------------------------
+// TRON Nile test payments (Phase 2 testing; USDT with no value)
+// ---------------------------------------------------------------------------
+
+/// A TRON test payment built here, waiting for the tablet's signature.
+pub struct PendingTron {
+    wallet_id: String,
+    owner: chain_tron::TronAddress,
+    raw: Vec<u8>,
+}
+
+fn wallet_tron(state: &AppState, id: &str) -> Result<(String, chain_tron::TronAddress), String> {
+    if id.len() > 32 {
+        return Err("Unknown wallet.".into());
+    }
+    let r = read_registry(state)?;
+    let w = r
+        .wallets
+        .iter()
+        .find(|w| w.id.as_str() == id)
+        .ok_or_else(|| "Unknown wallet.".to_owned())?;
+    let a = w
+        .tron
+        .ok_or_else(|| "This wallet has no TRON address.".to_owned())?;
+    Ok((w.id.to_string(), a))
+}
+
+/// Nile test balances (TRX and test USDT) of a wallet's TRON address.
+#[tauri::command]
+pub async fn get_nile_balances(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<tron_test::NileBalances, String> {
+    let (_, addr) = wallet_tron(&state, &id)?;
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        tron_test::balances(&state.http, &state.config, &addr),
+    )
+    .await
+    .map_err(|_| "The Nile node didn't answer in time.".to_owned())?
+}
+
+#[derive(Serialize)]
+pub struct PreparedTron {
+    recipient: String,
+    amount_usdt: String,
+    fee_limit_trx: String,
+    txid: String,
+    qr_text: String,
+    qr_size: usize,
+    qr_modules: Vec<bool>,
+}
+
+/// Build a Nile test USDT transfer locally and show it as a QR code.
+#[tauri::command]
+pub async fn prepare_tron_test_send(
+    state: State<'_, AppState>,
+    id: String,
+    recipient: String,
+    amount: String,
+) -> Result<PreparedTron, String> {
+    let (wallet_id, owner) = wallet_tron(&state, &id)?;
+    let to: chain_tron::TronAddress = recipient
+        .trim()
+        .parse()
+        .map_err(|e: chain_tron::TronAddressError| format!("Recipient: {e}"))?;
+    if to == owner {
+        return Err("The recipient is this wallet itself.".into());
+    }
+    let amount_units = tron_test::parse_usdt(&amount)?;
+    let t = tokio::time::timeout(
+        Duration::from_secs(30),
+        tron_test::build(&state.http, &state.config, owner, to, amount_units),
+    )
+    .await
+    .map_err(|_| "The Nile node didn't answer in time.".to_owned())??;
+    let raw = t.encode_raw();
+    let qr_text = watch_export::bytes_to_qr(watch_export::TRON_REQUEST_PREFIX, &raw)
+        .map_err(|e| e.to_string())?;
+    let qr = crate::qr::matrix_large(&qr_text)?;
+    let txid = hex::encode(tron_tx::txid(&raw));
+    *state.pending_tron.lock().map_err(|_| LOCK_ERR.to_owned())? = Some(PendingTron {
+        wallet_id,
+        owner,
+        raw,
+    });
+    Ok(PreparedTron {
+        recipient: to.to_base58(),
+        amount_usdt: amount.trim().to_owned(),
+        fee_limit_trx: (tron_test::FEE_LIMIT_SUN / 1_000_000).to_string(),
+        txid,
+        qr_text,
+        qr_size: qr.size,
+        qr_modules: qr.modules,
+    })
+}
+
+/// Take the tablet's signature (WTS1 QR), check it against the transaction
+/// built here, and broadcast it to Nile.
+#[tauri::command]
+pub async fn finish_tron_test_send(
+    state: State<'_, AppState>,
+    signed_qr: String,
+) -> Result<tron_test::TronSent, String> {
+    state.session.with_test_wallets(false, |_| Ok(()))?;
+    let answer = watch_export::bytes_from_qr(watch_export::TRON_SIGNATURE_PREFIX, &signed_qr)
+        .map_err(|_| {
+            "That isn't a TRON signature from the tablet (or it was scanned wrongly).".to_owned()
+        })?;
+    let (raw, owner, wallet_id) = {
+        let p = state.pending_tron.lock().map_err(|_| LOCK_ERR.to_owned())?;
+        let p = p.as_ref().ok_or_else(|| {
+            "No TRON payment is waiting for a signature. Build it again.".to_owned()
+        })?;
+        (p.raw.clone(), p.owner, p.wallet_id.clone())
+    };
+    let signed = tron_test::finalize(&raw, &owner, &answer)?;
+    let txid = tron_tx::txid(&raw);
+    let sent = tron_test::broadcast(&state.http, &state.config, &signed, &txid).await?;
+    *state.pending_tron.lock().map_err(|_| LOCK_ERR.to_owned())? = None;
+    state.session.audit().record(
+        Event::TestPaymentSent,
+        &format!(
+            "{wallet_id} (TRON Nile), transaction {}",
+            sent.txid.chars().take(8).collect::<String>()
+        ),
+    );
+    Ok(sent)
+}
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 
@@ -1506,7 +1639,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            29,
+            32,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

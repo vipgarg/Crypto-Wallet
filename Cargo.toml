@@ -12,6 +12,7 @@ members = [
     "crates/sys-checks",
     "crates/watch-export",
     "crates/btc-send",
+    "crates/tron-tx",
     "crates/signer-core",
     "crates/signer-ffi",
     "app/src-tauri",

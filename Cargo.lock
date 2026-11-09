@@ -3630,10 +3630,12 @@ dependencies = [
  "chain-tron",
  "getrandom 0.2.17",
  "hex",
+ "secp256k1",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.21",
+ "tron-tx",
  "wallet-types",
  "watch-export",
  "zeroize",
@@ -3645,9 +3647,11 @@ version = "0.1.0"
 dependencies = [
  "bitcoin",
  "btc-send",
+ "chain-tron",
  "qrcode",
  "signer-core",
  "thiserror 2.0.21",
+ "tron-tx",
  "uniffi",
  "wallet-types",
  "zeroize",
@@ -4522,6 +4526,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tron-tx"
+version = "0.1.0"
+dependencies = [
+ "chain-eth",
+ "chain-tron",
+ "hex",
+ "secp256k1",
+ "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4941,15 +4957,19 @@ dependencies = [
  "btc-send",
  "chain-btc",
  "chain-eth",
+ "chain-tron",
  "data-sources",
  "futures-util",
+ "hex",
  "qrcode",
+ "secp256k1",
  "serde",
  "serde_json",
  "sys-checks",
  "tauri",
  "tauri-build",
  "tokio",
+ "tron-tx",
  "wallet-core",
  "wallet-types",
  "watch-export",

@@ -32,6 +32,9 @@ const COMMANDS: &[&str] = &[
     "finish_test_send",
     "get_settings",
     "set_bitcoin_enabled",
+    "get_nile_balances",
+    "prepare_tron_test_send",
+    "finish_tron_test_send",
 ];
 
 fn main() {

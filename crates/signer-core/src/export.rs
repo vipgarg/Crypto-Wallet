@@ -3,8 +3,9 @@
 //! code; this module re-exports it.
 
 pub use watch_export::{
-    decode, decode_test, encode, encode_test, psbt_from_qr, psbt_to_qr, ExportError, TestExport,
-    WatchOnlyExport, PREFIX, PSBT_PREFIX, TEST_PREFIX,
+    bytes_from_qr, bytes_to_qr, decode, decode_test, encode, encode_test, psbt_from_qr, psbt_to_qr,
+    ExportError, TestExport, WatchOnlyExport, PREFIX, PSBT_PREFIX, TEST_PREFIX,
+    TRON_REQUEST_PREFIX, TRON_SIGNATURE_PREFIX,
 };
 
 #[cfg(test)]

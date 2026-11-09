@@ -84,6 +84,9 @@ struct RawPinned {
     usdt_erc20: String,
     eth_chain_id: u64,
     usdt_trc20: String,
+    /// TRON Nile **test** USDT (test network only).
+    #[serde(default)]
+    usdt_trc20_nile: Option<String>,
 }
 
 /// An Esplora provider on Bitcoin **signet** (test network; Phase 2 testing).
@@ -103,6 +106,9 @@ struct RawConfig {
     providers: Vec<ProviderConfig>,
     #[serde(default)]
     signet_providers: Vec<SignetProvider>,
+    /// TRON Nile test-network nodes (same fields as signet providers).
+    #[serde(default)]
+    nile_providers: Vec<SignetProvider>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +120,10 @@ pub struct NetworkConfig {
     pub providers: Vec<ProviderConfig>,
     /// Bitcoin signet providers (test network only).
     pub signet_providers: Vec<SignetProvider>,
+    /// TRON Nile nodes (test network only).
+    pub nile_providers: Vec<SignetProvider>,
+    /// Pinned TRON Nile test USDT contract.
+    pub usdt_trc20_nile: Option<TronAddress>,
     /// SHA-256 of the exact config text, shown in the app so you can compare
     /// it with the reviewed release record.
     pub sha256: String,
@@ -184,7 +194,19 @@ impl NetworkConfig {
                 }
             }
         }
-        for p in &raw.signet_providers {
+        let usdt_trc20_nile =
+            match &raw.pinned.usdt_trc20_nile {
+                None => None,
+                Some(s) => Some(s.parse::<TronAddress>().map_err(
+                    |e: chain_tron::TronAddressError| ConfigError::Contract(e.to_string()),
+                )?),
+            };
+        if usdt_trc20_nile == Some(usdt_trc20) {
+            return Err(ConfigError::Contract(
+                "the Nile test USDT must differ from the mainnet USDT".into(),
+            ));
+        }
+        for p in raw.signet_providers.iter().chain(&raw.nile_providers) {
             let err = |m| ConfigError::Provider(p.id.clone(), m);
             if !ids.insert(p.id.clone()) {
                 return Err(err("duplicate id"));
@@ -212,6 +234,8 @@ impl NetworkConfig {
             usdt_trc20,
             providers: raw.providers,
             signet_providers: raw.signet_providers,
+            nile_providers: raw.nile_providers,
+            usdt_trc20_nile,
             sha256: hex::encode(hasher.finalize()),
         })
     }

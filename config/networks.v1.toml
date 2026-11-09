@@ -26,6 +26,10 @@ usdt_erc20 = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
 eth_chain_id = 1
 # USDT on TRON (TRC-20). Verify against Tether's site and Tronscan.
 usdt_trc20 = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+# TRON Nile TEST network USDT (no value; Phase 2 testing only). From TRON's
+# wallet-cli token list for Nile ("official", 6 decimals). Also compiled
+# into the tablet app, which signs only this contract in the test build.
+usdt_trc20_nile = "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"
 
 [[providers]]
 id = "mempool-space"
@@ -119,3 +123,13 @@ operator = "mempool.space"
 id = "emzy-signet"
 base_url = "https://mempool.emzy.de/signet/api"
 operator = "Emzy (independent mempool instance)"
+
+# ---------------------------------------------------------------------------
+# TRON NILE: a public TEST network whose coins have no value. Phase 2 testing
+# only. TronGrid's Nile node (listed in TRON's wallet-cli network table).
+# Only one public operator is known, so Nile data is single-source and the
+# app says so; real (mainnet) balances keep using two providers.
+[[nile_providers]]
+id = "trongrid-nile"
+base_url = "https://nile.trongrid.io"
+operator = "TronGrid (TRON DAO)"

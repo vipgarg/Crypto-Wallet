@@ -544,12 +544,12 @@ private fun DetailScreen(
         }
     }
     HorizontalDivider()
-    Text("Test network (Bitcoin signet)", fontWeight = FontWeight.SemiBold)
+    Text("Test networks (TRON Nile, Bitcoin signet)", fontWeight = FontWeight.SemiBold)
     if (entry.stateless) {
         Hint("Not available for Vault-tier wallets (their seed isn't stored here). Use a Spending test wallet.")
     } else {
         Hint("Practise signing with test coins that have no value: export the test wallet to the PC, then sign test payments.")
-        OutlinedButton(onClick = onTestNet) { Text("Test network (signet)") }
+        OutlinedButton(onClick = onTestNet) { Text("Test network") }
     }
     HorizontalDivider()
     OutlinedButton(onClick = onBack) { Text("Back to wallets") }

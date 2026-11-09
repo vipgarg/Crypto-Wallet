@@ -55,6 +55,9 @@ Built by `.github/workflows/android.yml` (decision: Option A, GitHub Actions).
 
 ## Test network screens (Phase 2)
 
+TRON Nile (USDT): wallet → **Test network** → unlock → **Sign a TRON test payment (Nile USDT)**: scan the PC's `WTR1` QR, check, type the recipient's last 6 characters (case-sensitive), sign, show the `WTS1` QR. See docs/phase2-tron-testnet.md.
+
+
 Wallet → **Test network (signet)** (Spending/Savings wallets): unlock with the vault password (and passphrase), then:
 - **Show test export QR**: the `m/84'/1'/0'` test key for the PC's Test send page.
 - **Sign a test payment**: the camera reads the PC's payment QR (CameraX + ZXing, offline). The tablet shows network, recipient (grouped, bold ends), amount, fee, change and the transaction ID start, all worked out on the tablet. You type the recipient's **last 6 characters from your paper**; then it signs and shows the signed QR for the PC.

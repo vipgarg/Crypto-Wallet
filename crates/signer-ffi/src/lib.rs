@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use signer_core::{accounts, btc_sign, entropy, export, seed, vault};
+use signer_core::{accounts, btc_sign, entropy, export, seed, tron_sign, vault};
 use wallet_types::{Tier, WalletId};
 use zeroize::Zeroizing;
 
@@ -223,6 +223,34 @@ pub struct BtcReviewRecord {
     pub txid: String,
 }
 
+/// What the tablet shows before you approve a TRON (Nile) test payment.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TronReviewRecord {
+    pub network: String,
+    pub from: String,
+    pub recipient: String,
+    pub amount_usdt: String,
+    pub fee_limit_trx: String,
+    pub txid: String,
+}
+
+impl From<tron_sign::TronReview> for TronReviewRecord {
+    fn from(r: tron_sign::TronReview) -> Self {
+        Self {
+            network: r.network,
+            from: r.from,
+            recipient: r.recipient,
+            amount_usdt: r.amount_usdt,
+            fee_limit_trx: r.fee_limit_trx,
+            txid: r.txid,
+        }
+    }
+}
+
+fn tron_err(e: tron_sign::TronSignError) -> SignerError {
+    SignerError::Sign { msg: e.to_string() }
+}
+
 impl From<btc_sign::Review> for BtcReviewRecord {
     fn from(r: btc_sign::Review) -> Self {
         Self {
@@ -287,6 +315,58 @@ impl UnlockedWallet {
         Ok(btc_sign::review(&psbt, &self.master()?)
             .map_err(sign_err)?
             .into())
+    }
+
+    /// Check a TRON payment request scanned from the PC (`WTR1:` QR text).
+    /// `now_ms` is this tablet's clock. Nothing is signed.
+    pub fn review_tron(
+        &self,
+        qr_text: String,
+        now_ms: u64,
+    ) -> Result<TronReviewRecord, SignerError> {
+        let raw = export::bytes_from_qr(export::TRON_REQUEST_PREFIX, &qr_text)
+            .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
+        Ok(tron_sign::review(&raw, &self.master()?, now_ms)
+            .map_err(tron_err)?
+            .into())
+    }
+
+    /// Sign a TRON request, only if it still has the reviewed transaction ID
+    /// and the typed characters match the end of the recipient address.
+    /// Returns the signature as QR text (`WTS1:`).
+    pub fn sign_tron(
+        &self,
+        qr_text: String,
+        expected_txid: String,
+        typed_last6: String,
+        now_ms: u64,
+    ) -> Result<String, SignerError> {
+        let raw = export::bytes_from_qr(export::TRON_REQUEST_PREFIX, &qr_text)
+            .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
+        let master = self.master()?;
+        let review = tron_sign::review(&raw, &master, now_ms).map_err(tron_err)?;
+        if review.txid != expected_txid {
+            return Err(SignerError::Sign {
+                msg: "the request changed since it was reviewed".into(),
+            });
+        }
+        // TRON addresses are case-sensitive (Base58): compare exactly.
+        let typed = typed_last6.trim();
+        let tail: String = review
+            .recipient
+            .chars()
+            .skip(review.recipient.chars().count().saturating_sub(6))
+            .collect();
+        if typed.chars().count() != 6 || typed != tail {
+            return Err(SignerError::Sign {
+                msg: "the last 6 characters you typed don't match the recipient address (TRON addresses are case-sensitive). Check your paper address book".into(),
+            });
+        }
+        let (sig, _) = tron_sign::sign(&raw, &master, now_ms).map_err(tron_err)?;
+        let mut out = tron_tx::txid(&raw).to_vec();
+        out.extend_from_slice(&sig);
+        export::bytes_to_qr(export::TRON_SIGNATURE_PREFIX, &out)
+            .map_err(|e| SignerError::Export { msg: e.to_string() })
     }
 
     /// Sign the request, but only if it is still exactly the one reviewed
@@ -450,6 +530,43 @@ mod tests {
             btc_send::from_bytes(&export::psbt_from_qr(&signed_qr).expect("bytes")).expect("psbt");
         let tx = btc_send::finalize(&psbt, &signed).expect("finalize");
         assert_eq!(tx.compute_txid().to_string(), plan.txid);
+
+        // TRON Nile: the request the PC builds, reviewed and signed here.
+        let me: chain_tron::TronAddress = w.public().tron.parse().expect("tron");
+        let to: chain_tron::TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("to");
+        let now: u64 = 1_800_000_000_000;
+        let t = tron_tx::Trc20Transfer {
+            ref_block_bytes: [1, 2],
+            ref_block_hash: [3; 8],
+            expiration_ms: now + 540_000,
+            timestamp_ms: now,
+            fee_limit_sun: 30_000_000,
+            owner: me,
+            token: tron_tx::NILE_USDT.parse().expect("usdt"),
+            recipient: to,
+            amount: 2_500_000,
+        };
+        let raw = t.encode_raw();
+        let qr = export::bytes_to_qr(export::TRON_REQUEST_PREFIX, &raw).expect("qr");
+        let review = w.review_tron(qr.clone(), now).expect("review");
+        assert_eq!(review.amount_usdt, "2.5");
+        assert_eq!(review.from, me.to_base58());
+        // Case matters for TRON: "LjGt" lowercase is refused.
+        assert!(w
+            .sign_tron(
+                qr.clone(),
+                review.txid.clone(),
+                "zgjlj6t".chars().skip(1).collect(),
+                now
+            )
+            .is_err());
+        let sig_qr = w
+            .sign_tron(qr, review.txid.clone(), "gjLj6t".into(), now)
+            .expect("sign");
+        let answer = export::bytes_from_qr(export::TRON_SIGNATURE_PREFIX, &sig_qr).expect("answer");
+        assert_eq!(answer[..32], tron_tx::txid(&raw));
+        let sig: [u8; 65] = answer[32..].try_into().expect("65");
+        assert_eq!(tron_tx::recover_signer(&raw, &sig), Ok(me));
     }
 
     #[test]

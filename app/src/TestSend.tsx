@@ -15,6 +15,8 @@ import {
 import { QrCode } from "./Auth";
 import { QrScanner } from "./QrScanner";
 import { ChunkedAddress } from "./Receive";
+import { useBitcoin } from "./settings";
+import type { NileBalances, PreparedTron, TronSent, WalletView } from "./api";
 
 const MAX_QR_TEXT = 6000;
 
@@ -29,7 +31,7 @@ type Step =
   | { kind: "sending"; prepared: PreparedSend }
   | { kind: "sent"; sent: SentView };
 
-export function TestSendPage() {
+function BitcoinTestSend() {
   const [wallets, setWallets] = useState<TestWalletSummary[]>([]);
   const [selected, setSelected] = useState("");
   const [view, setView] = useState<TestWalletView | null>(null);
@@ -111,12 +113,7 @@ export function TestSendPage() {
   };
 
   return (
-    <section>
-      <h2>Test send (Bitcoin signet)</h2>
-      <p className="warning">
-        Test network only: signet coins have <strong>no value</strong>. This page is for practising the full signing
-        flow with the tablet before any real sending exists.
-      </p>
+    <>
       {error && <p className="error">{error}</p>}
       {busy && <p className="hint">{busy}</p>}
 
@@ -332,6 +329,238 @@ export function TestSendPage() {
           </button>
         </div>
       )}
+    </>
+  );
+}
+
+type TronStep =
+  | { kind: "form" }
+  | { kind: "show"; p: PreparedTron }
+  | { kind: "scan"; p: PreparedTron }
+  | { kind: "sent"; sent: TronSent };
+
+function TronTestSend() {
+  const [wallets, setWallets] = useState<WalletView[]>([]);
+  const [selected, setSelected] = useState("");
+  const [bal, setBal] = useState<NileBalances | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [form, setForm] = useState({ recipient: "", amount: "" });
+  const [step, setStep] = useState<TronStep>({ kind: "form" });
+
+  useEffect(() => {
+    api.listWallets().then(
+      (ws) => {
+        const t = ws.filter((w) => w.tron);
+        setWallets(t);
+        if (t.length > 0) setSelected(t[0].id);
+      },
+      (e) => setError(errorText(e)),
+    );
+  }, []);
+
+  useEffect(() => {
+    setBal(null);
+    setStep({ kind: "form" });
+  }, [selected]);
+
+  const wallet = wallets.find((w) => w.id === selected);
+
+  const run = async <T,>(what: string, f: () => Promise<T>): Promise<T | undefined> => {
+    setBusy(what);
+    setError(null);
+    try {
+      return await f();
+    } catch (e) {
+      setError(errorText(e));
+      return undefined;
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const check = async () => {
+    const b = await run("Checking Nile balance…", () => api.getNileBalances(selected));
+    if (b) setBal(b);
+  };
+
+  const prepare = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const p = await run("Building the transaction…", () =>
+      api.prepareTronTestSend(selected, form.recipient.trim(), form.amount.trim()),
+    );
+    if (p) setStep({ kind: "show", p });
+  };
+
+  const finish = async (text: string, p: PreparedTron) => {
+    const sent = await run("Checking the signature and broadcasting…", () => api.finishTronTestSend(text));
+    setStep(sent ? { kind: "sent", sent } : { kind: "show", p });
+  };
+
+  return (
+    <>
+      {error && <p className="error">{error}</p>}
+      {busy && <p className="hint">{busy}</p>}
+      <div className="card">
+        <h3>Wallet</h3>
+        {wallets.length === 0 ? (
+          <p className="muted">No wallet with a TRON address yet. Add one from the tablet on the Wallets page.</p>
+        ) : (
+          <div className="toolbar">
+            <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+              {wallets.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.label} ({w.id})
+                </option>
+              ))}
+            </select>
+            <button onClick={() => void check()} disabled={!!busy || !selected}>
+              Check Nile balance
+            </button>
+          </div>
+        )}
+        {wallet?.tron && (
+          <>
+            <p className="hint">
+              The same TRON address works on the Nile test network. Get free test TRX and test USDT from the Nile
+              faucet (nileex.io → Get test coins), pasting this address:
+            </p>
+            <ChunkedAddress a={wallet.tron} />
+            <p className="hint">
+              You need some test TRX too: TRON uses it to pay for sending USDT (energy), up to 30 TRX per transfer.
+            </p>
+          </>
+        )}
+        {bal && (
+          <p>
+            Nile balance: <strong>{bal.usdt} test USDT</strong> · {bal.trx} test TRX{" "}
+            <span className="muted">
+              (source: {bal.source}, one node; see {bal.explorer_url})
+            </span>
+          </p>
+        )}
+      </div>
+
+      {wallet && step.kind === "form" && (
+        <form className="card form" onSubmit={(e) => void prepare(e)}>
+          <h3>Prepare a test USDT payment</h3>
+          <label>
+            Recipient (TRON address, starts with T)
+            <input
+              className="mono"
+              value={form.recipient}
+              onChange={(e) => setForm({ ...form, recipient: e.target.value })}
+              autoComplete="off"
+              spellCheck={false}
+              required
+            />
+          </label>
+          <p className="hint">
+            Write the recipient on paper: you'll type its last 6 characters on the tablet. TRON addresses are
+            case-sensitive.
+          </p>
+          <label>
+            Amount (test USDT, e.g. 5 or 2.5)
+            <input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} required />
+          </label>
+          <button type="submit" disabled={!!busy}>
+            Build payment
+          </button>
+        </form>
+      )}
+
+      {(step.kind === "show" || step.kind === "scan") && (
+        <div className="card">
+          <h3>Payment waiting for the tablet</h3>
+          <dl>
+            <dt>Recipient</dt>
+            <dd>
+              <ChunkedAddress a={step.p.recipient} />
+            </dd>
+            <dt>Amount</dt>
+            <dd>{step.p.amount_usdt} test USDT</dd>
+            <dt>Fee limit</dt>
+            <dd>up to {step.p.fee_limit_trx} test TRX (usually much less)</dd>
+            <dt>Transaction ID starts with</dt>
+            <dd className="mono big-address">
+              <strong>{step.p.txid.slice(0, 8)}</strong>
+            </dd>
+          </dl>
+          {step.kind === "show" && (
+            <>
+              <p className="hint">
+                On the tablet: wallet → <strong>Test network</strong> → <strong>Sign a TRON test payment</strong> → scan
+                this QR. Check the recipient, amount and transaction ID start, then type the recipient's last 6
+                characters from your paper. It must be signed within about 9 minutes, or build it again.
+              </p>
+              <div className="qr-wrap">
+                <QrCode size={step.p.qr_size} modules={step.p.qr_modules} px={460} />
+              </div>
+              <div className="button-row">
+                <button onClick={() => setStep({ kind: "scan", p: step.p })}>Scan the signed QR from the tablet</button>
+                <button className="secondary" onClick={() => setStep({ kind: "form" })}>
+                  Cancel payment
+                </button>
+              </div>
+            </>
+          )}
+          {step.kind === "scan" && (
+            <QrScanner
+              prefix="WTS1:"
+              maxLength={2000}
+              wrongHint="That isn't a TRON signature from the tablet (it should start with WTS1)."
+              onResult={(t) => void finish(t, step.p)}
+              onCancel={() => setStep({ kind: "show", p: step.p })}
+            />
+          )}
+        </div>
+      )}
+
+      {step.kind === "sent" && (
+        <div className="card">
+          <h3>✓ Test payment sent</h3>
+          <p>
+            Transaction ID: <span className="mono">{step.sent.txid}</span>
+          </p>
+          <p className="hint">
+            See it in your browser: <span className="mono">{step.sent.explorer_url}</span>
+          </p>
+          <button
+            onClick={() => {
+              setStep({ kind: "form" });
+              void check();
+            }}
+          >
+            Done
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function TestSendPage() {
+  const btc = useBitcoin();
+  const [tab, setTab] = useState<"tron" | "btc">("tron");
+  const active = btc ? tab : "tron";
+  return (
+    <section>
+      <h2>Test send</h2>
+      <p className="warning">
+        Test networks only: these coins have <strong>no value</strong>. Practise the full signing flow with the tablet
+        before any real sending exists.
+      </p>
+      <div className="tabs">
+        <button className={active === "tron" ? "active" : ""} onClick={() => setTab("tron")}>
+          USDT on TRON Nile
+        </button>
+        {btc && (
+          <button className={active === "btc" ? "active" : ""} onClick={() => setTab("btc")}>
+            Bitcoin signet
+          </button>
+        )}
+      </div>
+      {active === "tron" ? <TronTestSend /> : <BitcoinTestSend />}
     </section>
   );
 }

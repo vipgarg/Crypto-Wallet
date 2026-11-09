@@ -38,7 +38,7 @@ Still to do for this gate: Ethereum (compare with etherscan.io) and Bitcoin (com
 
 | Item | Status |
 |---|---|
-| Config hash identical on Windows and Linux | ✅ Fixed in `04a304a` (LF-normalised hash + `.gitattributes`). The hash changes with every reviewed config change: `dbc4204f…979f` (`7dc60d7`), `d2a17131…0134` (`5a51049`), `8b27e487…4ae5` (`0452a4f`), `34a37160…7b3d` (third Bitcoin source), `14fbbbbc…54f8` (Blockscout history indexer), `b2448ed0…bcd0` (signet test providers, current). |
+| Config hash identical on Windows and Linux | ✅ Fixed in `04a304a` (LF-normalised hash + `.gitattributes`). The hash changes with every reviewed config change: `dbc4204f…979f` (`7dc60d7`), `d2a17131…0134` (`5a51049`), `8b27e487…4ae5` (`0452a4f`), `34a37160…7b3d` (third Bitcoin source), `14fbbbbc…54f8` (Blockscout history indexer), `b2448ed0…bcd0` (signet test providers), `f09f459f…78b6` (TRON Nile test node and test USDT, current). |
 | Test outgoing tx triggers an alert within 5 minutes with the PC off | ⏳ Set up per `docs/alerts-guide.md`, then record each test below |
 | Monitor heartbeat on both channels | ⏳ Not built |
 | Restoring an older `policy.db` is detected | ⏳ Not built |

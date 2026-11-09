@@ -181,6 +181,29 @@ export interface SentView {
   explorer_url: string;
 }
 
+export interface NileBalances {
+  address: string;
+  trx: string;
+  usdt: string;
+  source: string;
+  explorer_url: string;
+}
+
+export interface PreparedTron {
+  recipient: string;
+  amount_usdt: string;
+  fee_limit_trx: string;
+  txid: string;
+  qr_text: string;
+  qr_size: number;
+  qr_modules: boolean[];
+}
+
+export interface TronSent {
+  txid: string;
+  explorer_url: string;
+}
+
 export interface Settings {
   bitcoin_enabled: boolean;
 }
@@ -363,6 +386,10 @@ export const api = {
   addSignerWallet: (text: string) => call<WalletView[]>("add_signer_wallet", { text }),
   getAuditLog: () => call<AuditView>("get_audit_log"),
   getSettings: () => call<Settings>("get_settings"),
+  getNileBalances: (id: string) => call<NileBalances>("get_nile_balances", { id }),
+  prepareTronTestSend: (id: string, recipient: string, amount: string) =>
+    call<PreparedTron>("prepare_tron_test_send", { id, recipient, amount }),
+  finishTronTestSend: (signedQr: string) => call<TronSent>("finish_tron_test_send", { signedQr }),
   setBitcoinEnabled: (enabled: boolean) => call<Settings>("set_bitcoin_enabled", { enabled }),
   getAddressBook: () => call<AddressBookView>("get_address_book"),
   addAddressBookEntry: (entry: NewBookEntry) => call<AddressBookView>("add_address_book_entry", { entry }),

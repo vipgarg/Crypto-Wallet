@@ -4,6 +4,7 @@ pub mod commands;
 pub mod qr;
 pub mod session;
 pub mod testnet;
+pub mod tron_test;
 
 use std::sync::Arc;
 
@@ -50,6 +51,7 @@ pub fn run() {
                 progress: commands::ProgressState::default(),
                 last_check_problems: std::sync::Mutex::new(None),
                 pending_send: std::sync::Mutex::new(None),
+                pending_tron: std::sync::Mutex::new(None),
             });
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -90,6 +92,9 @@ pub fn run() {
             commands::finish_test_send,
             commands::get_settings,
             commands::set_bitcoin_enabled,
+            commands::get_nile_balances,
+            commands::prepare_tron_test_send,
+            commands::finish_tron_test_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

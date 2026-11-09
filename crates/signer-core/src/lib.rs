@@ -12,10 +12,12 @@
 //! - `export`: the watch-only export the tablet shows as a QR code for the PC.
 //!
 //! - `btc_sign`: Bitcoin signing, **signet (test network) only** in this build.
+//! - `tron_sign`: TRON USDT signing, **Nile (test network) only** in this build.
 
 pub mod accounts;
 pub mod btc_sign;
 pub mod entropy;
 pub mod export;
 pub mod seed;
+pub mod tron_sign;
 pub mod vault;

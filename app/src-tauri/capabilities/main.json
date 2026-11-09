@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The only capability: the main window may call the twenty-nine reviewed app commands. No core plugins, no shell, fs, http, opener or updater.",
+  "description": "The only capability: the main window may call the thirty-two reviewed app commands. No core plugins, no shell, fs, http, opener or updater.",
   "local": true,
   "windows": ["main"],
   "permissions": [
@@ -33,6 +33,9 @@
     "allow-prepare-test-send",
     "allow-finish-test-send",
     "allow-get-settings",
-    "allow-set-bitcoin-enabled"
+    "allow-set-bitcoin-enabled",
+    "allow-get-nile-balances",
+    "allow-prepare-tron-test-send",
+    "allow-finish-tron-test-send"
   ]
 }

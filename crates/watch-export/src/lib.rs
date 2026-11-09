@@ -193,6 +193,43 @@ pub fn psbt_from_qr(s: &str) -> Result<Vec<u8>, ExportError> {
     Ok(bytes)
 }
 
+/// TRON payment request from the PC (unsigned `Transaction.raw`).
+pub const TRON_REQUEST_PREFIX: &str = "WTR1:";
+/// TRON signature from the tablet: 32-byte txid followed by the 65-byte
+/// signature.
+pub const TRON_SIGNATURE_PREFIX: &str = "WTS1:";
+
+/// Generic QR envelope: `prefix` + base64(bytes) + `#` + first 8 hex of
+/// SHA-256(bytes). The checksum catches scanning errors only.
+pub fn bytes_to_qr(prefix: &str, data: &[u8]) -> Result<String, ExportError> {
+    use base64::Engine;
+    if data.is_empty() || data.len() > MAX_PSBT_BYTES {
+        return Err(ExportError::Invalid);
+    }
+    let sum = hex::encode(&Sha256::digest(data)[..4]);
+    Ok(format!(
+        "{prefix}{}#{sum}",
+        base64::engine::general_purpose::STANDARD.encode(data)
+    ))
+}
+
+pub fn bytes_from_qr(prefix: &str, s: &str) -> Result<Vec<u8>, ExportError> {
+    use base64::Engine;
+    let s = s.trim();
+    if s.len() > MAX_LEN * 2 {
+        return Err(ExportError::NotAnExport);
+    }
+    let body = s.strip_prefix(prefix).ok_or(ExportError::NotAnExport)?;
+    let (b64, sum) = body.rsplit_once('#').ok_or(ExportError::NotAnExport)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|_| ExportError::Checksum)?;
+    if bytes.len() > MAX_PSBT_BYTES || hex::encode(&Sha256::digest(&bytes)[..4]) != sum {
+        return Err(ExportError::Checksum);
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +273,17 @@ mod tests {
         let mut bad = e.clone();
         bad.tpub = "xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V".into();
         assert_eq!(encode_test(&bad), Err(ExportError::Invalid));
+    }
+
+    #[test]
+    fn generic_envelope_keeps_prefixes_apart() {
+        let qr = bytes_to_qr(TRON_REQUEST_PREFIX, &[1, 2, 3]).expect("qr");
+        assert_eq!(bytes_from_qr(TRON_REQUEST_PREFIX, &qr), Ok(vec![1, 2, 3]));
+        assert_eq!(
+            bytes_from_qr(TRON_SIGNATURE_PREFIX, &qr),
+            Err(ExportError::NotAnExport)
+        );
+        assert_eq!(psbt_from_qr(&qr), Err(ExportError::NotAnExport));
     }
 
     #[test]

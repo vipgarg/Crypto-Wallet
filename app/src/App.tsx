@@ -826,7 +826,6 @@ function MainApp({ onLock }: { onLock: () => void }) {
     const s = await api.setBitcoinEnabled(enabled);
     setBtc(s.bitcoin_enabled);
     portfolio.markStale();
-    if (!s.bitcoin_enabled && page === "testsend") setPage("about");
   };
 
   // Idle lock: any key, click or mouse move counts as activity.
@@ -850,7 +849,7 @@ function MainApp({ onLock }: { onLock: () => void }) {
 
   const pages = (
     ["portfolio", "receive", "activity", "addresses", "wallets", "testsend", "checks", "log", "about"] as Page[]
-  ).filter((p) => btc || p !== "testsend");
+  );
 
   return (
     <BitcoinContext.Provider value={btc}>
@@ -882,7 +881,7 @@ function MainApp({ onLock }: { onLock: () => void }) {
           </section>
         )}
         {page === "addresses" && <AddressBookPage />}
-        {page === "testsend" && btc && <TestSendPage />}
+        {page === "testsend" && <TestSendPage />}
         {page === "log" && <AuditLogPage />}
         {page === "about" && <AboutPage onBitcoin={changeBitcoin} />}
       </main>
