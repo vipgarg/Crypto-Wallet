@@ -165,6 +165,72 @@ pub mod api {
         json!({"address": addr.to_hex()})
     }
 
+    /// Check the account's permissions against the v1 baseline
+    /// (ARCHITECTURE.md §8.5): the owner permission and the single active
+    /// permission each have threshold 1 and exactly one key, this account's
+    /// own address, with weight 1; no witness permission. Attackers who get
+    /// a key once often add their own key here, so any deviation is
+    /// refused. An account that never changed its permissions may omit
+    /// them (then the defaults apply, which are the baseline).
+    pub fn check_permissions(resp: &Value, me: &TronAddress) -> Result<(), String> {
+        let me_hex = me.to_hex().to_lowercase();
+        let single_own_key = |p: &Value, what: &str| -> Result<(), String> {
+            let bad = |why: &str| Err(format!("the account's {what} permission {why}"));
+            if p.get("threshold").and_then(Value::as_u64).unwrap_or(1) != 1 {
+                return bad("needs more than one signature (threshold isn't 1)");
+            }
+            let keys = p
+                .get("keys")
+                .and_then(Value::as_array)
+                .ok_or("malformed permissions")?;
+            if keys.len() != 1 {
+                return bad(&format!(
+                    "has {} keys instead of only this wallet's key",
+                    keys.len()
+                ));
+            }
+            let addr = keys[0]
+                .get("address")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_lowercase();
+            if addr != me_hex {
+                return bad("belongs to another address, not this wallet's key");
+            }
+            if keys[0].get("weight").and_then(Value::as_u64).unwrap_or(1) != 1 {
+                return bad("has an unusual key weight");
+            }
+            Ok(())
+        };
+        let obj = resp.as_object().ok_or("malformed account answer")?;
+        if let Some(e) = obj.get("Error").or_else(|| obj.get("error")) {
+            return Err(format!(
+                "node error: {}",
+                e.to_string().chars().take(120).collect::<String>()
+            ));
+        }
+        if obj.contains_key("witness_permission") {
+            return Err("the account has a witness permission (not expected for a wallet)".into());
+        }
+        if let Some(owner) = obj.get("owner_permission") {
+            single_own_key(owner, "owner")?;
+        }
+        if let Some(active) = obj.get("active_permission") {
+            let list = active.as_array().ok_or("malformed active permissions")?;
+            if list.len() != 1 {
+                return Err(format!(
+                    "the account has {} active permissions instead of one",
+                    list.len()
+                ));
+            }
+            if list[0].get("id").and_then(Value::as_u64).unwrap_or(2) != 2 {
+                return Err("the account's active permission has an unexpected id".into());
+            }
+            single_own_key(&list[0], "active")?;
+        }
+        Ok(())
+    }
+
     /// Parse TRX balance (sun) from a `getaccount` response. An account that
     /// has never received anything is returned as `{}`: balance 0.
     pub fn parse_trx_balance(resp: &Value) -> Result<u128, ApiError> {
@@ -765,6 +831,66 @@ pub mod history {
                 format!("/v1/accounts/{USDT}/transactions/trc20?limit=50&only_confirmed=true")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::api::check_permissions;
+    use super::TronAddress;
+    use serde_json::json;
+
+    fn me() -> TronAddress {
+        "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("me")
+    }
+
+    fn account(owner_keys: serde_json::Value, active_keys: serde_json::Value) -> serde_json::Value {
+        json!({
+            "address": me().to_hex(), "balance": 5,
+            "owner_permission": {"permission_name": "owner", "threshold": 1, "keys": owner_keys},
+            "active_permission": [{"type": "Active", "id": 2, "permission_name": "active", "threshold": 1,
+                "operations": "7fff1fc0033e0000000000000000000000000000000000000000000000000000", "keys": active_keys}]
+        })
+    }
+
+    #[test]
+    fn baseline_passes_and_changes_are_refused() {
+        let mine = json!([{"address": me().to_hex(), "weight": 1}]);
+        assert_eq!(
+            check_permissions(&account(mine.clone(), mine.clone()), &me()),
+            Ok(())
+        );
+        // Defaults omitted (never changed): fine.
+        assert_eq!(
+            check_permissions(&json!({"address": me().to_hex(), "balance": 1}), &me()),
+            Ok(())
+        );
+
+        let attacker = "41a5418b8da12e73075abb46375e7a15c758ea21fc";
+        let two =
+            json!([{"address": me().to_hex(), "weight": 1}, {"address": attacker, "weight": 1}]);
+        let e = check_permissions(&account(two, mine.clone()), &me()).expect_err("extra owner key");
+        assert!(e.contains("owner") && e.contains("2 keys"), "{e}");
+
+        let other = json!([{"address": attacker, "weight": 1}]);
+        let e = check_permissions(&account(mine.clone(), other), &me())
+            .expect_err("active key replaced");
+        assert!(e.contains("active") && e.contains("another address"), "{e}");
+
+        let mut v = account(mine.clone(), mine.clone());
+        v["owner_permission"]["threshold"] = json!(2);
+        assert!(check_permissions(&v, &me()).is_err());
+
+        let mut v = account(mine.clone(), mine.clone());
+        v["active_permission"] = json!([
+            v["active_permission"][0].clone(),
+            v["active_permission"][0].clone()
+        ]);
+        assert!(check_permissions(&v, &me()).is_err());
+
+        let mut v = account(mine.clone(), mine);
+        v["witness_permission"] = json!({"keys": []});
+        assert!(check_permissions(&v, &me()).is_err());
     }
 }
 

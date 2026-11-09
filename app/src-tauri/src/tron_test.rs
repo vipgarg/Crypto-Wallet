@@ -137,6 +137,11 @@ pub async fn require_ready_sender<H: HttpClient>(
             owner.to_base58()
         ));
     }
+    api::check_permissions(&acct, owner).map_err(|why| {
+        format!(
+            "Refused: {why}. Someone may have added their own key to this TRON account. Don't send from it; follow the incident runbook (move funds from a clean device). Compare on tronscan: Account → Permissions."
+        )
+    })?;
     let trx = api::parse_trx_balance(&acct).map_err(|e| format!("{}: {e}", p.id))?;
     if trx == 0 {
         return Err(format!(
