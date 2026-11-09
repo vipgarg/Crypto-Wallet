@@ -27,6 +27,14 @@ fn first_provider(config: &NetworkConfig) -> Result<&data_sources::config::Signe
         .ok_or_else(|| "No TRON Nile node is configured.".to_owned())
 }
 
+fn explorer(config: &NetworkConfig) -> &'static str {
+    if crate::real_send::is_real(config) {
+        "https://tronscan.org"
+    } else {
+        "https://nile.tronscan.org"
+    }
+}
+
 fn nile_usdt(config: &NetworkConfig) -> Result<TronAddress, String> {
     config
         .usdt_trc20_nile
@@ -112,7 +120,7 @@ pub async fn balances<H: HttpClient>(
         trx: decimal6(trx),
         usdt: decimal6(usdt_v),
         source: p.id.clone(),
-        explorer_url: format!("https://nile.tronscan.org/#/address/{}", addr.to_base58()),
+        explorer_url: format!("{}/#/address/{}", explorer(config), addr.to_base58()),
     })
 }
 
@@ -392,7 +400,7 @@ pub async fn broadcast<H: HttpClient>(
     let txid = hex::encode(txid);
     if resp.get("result").and_then(Value::as_bool) == Some(true) {
         return Ok(TronSent {
-            explorer_url: format!("https://nile.tronscan.org/#/transaction/{txid}"),
+            explorer_url: format!("{}/#/transaction/{txid}", explorer(config)),
             txid,
             log_note: String::new(),
         });

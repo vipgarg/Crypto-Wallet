@@ -55,3 +55,53 @@ Still to do for this gate: Ethereum (compare with etherscan.io) and Bitcoin (com
 
 | Date | Network | Service | Direction | PC off? | Minutes until email | Pass |
 |---|---|---|---|---|---|---|
+
+## Before real money: the final gates (owner)
+
+Everything below is built and **off**. Real-network signing needs all three switches, each a deliberate act: a real-network tablet build, real wallets made by it, and real sending switched on in the PC app. Do the gates in this order and record each one here (date, result, what you saw).
+
+### Gate 0: prerequisites (record when done)
+
+| Item | How | Record |
+|---|---|---|
+| Signing key pinned | Compare the start-up check's "App signed with your key" fingerprint (or `signing-cert.txt` in the CI download) with `keytool -list -v` on your PC. When identical, commit `android/signing-cert.sha256` (one line, 64 hex). From then on CI refuses any other key and the app checks itself. | |
+| Test-network practice done | TRON Nile USDT + TRX top-up, Ethereum Sepolia USDT, each signed on the tablet with the allowlist and limits in place; signing log numbers match the PC's audit log | |
+| Tamper check passes on the OnePlus | Start-up checks all green except the optional ones | |
+
+### Gate 1: recovery test
+
+1. Factory-reset the tablet (Settings → System → Reset). Set it up offline: no Google account, no Wi-Fi, airplane mode on, no SIM.
+2. Install the **real-network build** (below) with `adb install`, then switch USB debugging and developer options off.
+3. Restore a wallet using **only your paper** (words + passphrase). The fingerprint and addresses on the confirmation step must match your paper record.
+4. Record: date, fingerprint matched (yes/no). If it doesn't match, stop: the paper backup is wrong.
+
+### Gate 2: real wallets
+
+1. On the real-network build, create the real wallets **fresh**, with new dice rolls (at least 99). Never reuse a test wallet's words: wallets from test builds can't sign real payments anyway.
+2. Write the words and passphrase on paper (two copies, two places). Run the word check.
+3. Add each wallet to the PC (webcam scan of the export QR). Compare fingerprint and addresses on both screens.
+4. On the tablet: Allowlist → add your recipients (typed from paper), wait 24 hours. Check the daily limits (start: 50 USDT / 50 TRX a day; raising also waits 24 hours).
+5. On the PC: add the same recipients to the address book (24-hour wait by network time).
+
+### Gate 3: switch on real-network signing
+
+1. **Tablet build:** GitHub → Actions → "Android signer (testnet)" → Run workflow → tick **REAL-NETWORK build**. The run refuses without the signing key secrets and `android/signing-cert.sha256`. The download is `wallet-signer-REAL-<commit>.apk`; check its SHA-256 and the signing certificate before installing. The app shows a red "REAL-NETWORK BUILD" line, and its signing-key check is critical (it won't run with another key).
+2. **PC:** Test send → "Real-network sending" → type `I HAVE PASSED THE RELEASE GATES` → Switch on. It is recorded in the audit log; switch it off the same way.
+3. What's enforced from then on:
+   - Tablet: only wallets made by the real build sign real payments, only to its allowlist (24 h wait), within its daily limits; real USDT contracts pinned (TRON `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`, Ethereum `0xdAC17F958D2ee523a2206206994597C13D831ec7`, chain id 1); fee caps 30 TRX / 0.005 ETH; TRX only to your own wallets (≤ 200 TRX); every signature logged with a receipt.
+   - PC: real USDT only to address-book entries whose 24-hour wait is over; the TRON account's permissions must be the single-key baseline; the signature must recover to the wallet for exactly the transaction built; receipts checked for gaps; real payments logged as `real_payment_sent`.
+
+### Gate 4: small real trial (≤ ₹500)
+
+1. TRON first: fund one real wallet with a little TRX (activation + fees) and ≤ ₹500 of USDT. Send a small USDT amount to an allowlisted address you control. Check it on tronscan.org, and the tablet log number against the PC audit log.
+2. Then Ethereum: a little ETH for gas and ≤ ₹500 of USDT; same check on etherscan.io.
+3. Record: date, transaction IDs, fee paid, anything surprising. Only after both succeed, move larger amounts, gradually, within the limits.
+
+| Gate | Date | Result | Notes |
+|---|---|---|---|
+| 0 Prerequisites | | | |
+| 1 Recovery test | | | |
+| 2 Real wallets | | | |
+| 3 Switch on | | | |
+| 4 Trial TRON | | | |
+| 4 Trial Ethereum | | | |

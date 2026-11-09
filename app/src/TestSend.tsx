@@ -340,7 +340,7 @@ type TronStep =
   | { kind: "scan"; p: PreparedTron }
   | { kind: "sent"; sent: TronSent };
 
-function TronTestSend() {
+function TronTestSend({ real = false }: { real?: boolean }) {
   const [wallets, setWallets] = useState<WalletView[]>([]);
   const [selected, setSelected] = useState("");
   const [bal, setBal] = useState<NileBalances | null>(null);
@@ -389,7 +389,7 @@ function TronTestSend() {
   const prepare = async (e: React.FormEvent) => {
     e.preventDefault();
     const p = await run("Building the transaction…", () =>
-      api.prepareTronTestSend(selected, form.recipient.trim(), form.amount.trim(), kind),
+      api.prepareTronTestSend(selected, form.recipient.trim(), form.amount.trim(), kind, real),
     );
     if (p) setStep({ kind: "show", p });
   };
@@ -416,12 +416,20 @@ function TronTestSend() {
                 </option>
               ))}
             </select>
-            <button onClick={() => void check()} disabled={!!busy || !selected}>
-              Check Nile balance
-            </button>
+            {!real && (
+              <button onClick={() => void check()} disabled={!!busy || !selected}>
+                Check Nile balance
+              </button>
+            )}
           </div>
         )}
-        {wallet?.tron && (
+        {real && (
+          <p className="error">
+            REAL MONEY on TRON mainnet. Signed only by a real-money wallet on the real-network tablet build, to an
+            address on its allowlist, within its daily limit.
+          </p>
+        )}
+        {wallet?.tron && !real && (
           <>
             <p className="hint">
               The same TRON address works on the Nile test network. Get free test TRX and test USDT from the Nile
@@ -597,8 +605,25 @@ function TronTestSend() {
 
 export function TestSendPage() {
   const btc = useBitcoin();
-  const [tab, setTab] = useState<"tron" | "eth" | "btc">("tron");
-  const active = btc || tab !== "btc" ? tab : "tron";
+  const [tab, setTab] = useState<"tron" | "eth" | "btc" | "real-tron" | "real-eth">("tron");
+  const [realOn, setRealOn] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const [realError, setRealError] = useState<string | null>(null);
+  useEffect(() => {
+    api.getSettings().then((s) => setRealOn(s.real_sending), () => undefined);
+  }, []);
+  const switchReal = async (enabled: boolean) => {
+    setRealError(null);
+    try {
+      const s = await api.setRealSending(enabled, confirm);
+      setRealOn(s.real_sending);
+      setConfirm("");
+      if (!s.real_sending && tab.startsWith("real")) setTab("tron");
+    } catch (e) {
+      setRealError(errorText(e));
+    }
+  };
+  const active = (btc || tab !== "btc") && (realOn || !tab.startsWith("real")) ? tab : "tron";
   return (
     <section>
       <h2>Test send</h2>
@@ -613,13 +638,54 @@ export function TestSendPage() {
         <button className={active === "eth" ? "active" : ""} onClick={() => setTab("eth")}>
           USDT on Ethereum Sepolia
         </button>
+        {realOn && (
+          <>
+            <button className={active === "real-tron" ? "active" : ""} onClick={() => setTab("real-tron")}>
+              TRON (REAL)
+            </button>
+            <button className={active === "real-eth" ? "active" : ""} onClick={() => setTab("real-eth")}>
+              Ethereum (REAL)
+            </button>
+          </>
+        )}
         {btc && (
           <button className={active === "btc" ? "active" : ""} onClick={() => setTab("btc")}>
             Bitcoin signet
           </button>
         )}
       </div>
-      {active === "tron" ? <TronTestSend /> : active === "eth" ? <EthTestSend /> : <BitcoinTestSend />}
+      {active === "tron" ? (
+        <TronTestSend />
+      ) : active === "eth" ? (
+        <EthTestSend />
+      ) : active === "real-tron" ? (
+        <TronTestSend real />
+      ) : active === "real-eth" ? (
+        <EthTestSend real />
+      ) : (
+        <BitcoinTestSend />
+      )}
+      <div className="card">
+        <h3>Real-network sending: {realOn ? "ON" : "off"}</h3>
+        {realOn ? (
+          <button className="secondary" onClick={() => void switchReal(false)}>
+            Switch real sending off
+          </button>
+        ) : (
+          <>
+            <p className="hint">
+              Only after the release gates (docs/release-gate.md): recovery test on a factory-reset tablet, fresh real
+              wallets on the real-network tablet build, then a small trial. To switch on, type{" "}
+              <span className="mono">I HAVE PASSED THE RELEASE GATES</span>
+            </p>
+            <div className="toolbar">
+              <input value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" />
+              <button onClick={() => void switchReal(true)}>Switch on</button>
+            </div>
+          </>
+        )}
+        {realError && <p className="error">{realError}</p>}
+      </div>
     </section>
   );
 }

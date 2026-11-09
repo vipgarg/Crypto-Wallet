@@ -19,7 +19,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import uniffi.signer_ffi.PolicyRecord
 import uniffi.signer_ffi.UnlockedWallet
-import uniffi.signer_ffi.policyNetworks
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -104,7 +103,7 @@ fun PolicyScreen(w: UnlockedWallet, entry: WalletEntry, store: WalletStore, onBa
                 }
             }
             Text("Add an address", fontWeight = FontWeight.SemiBold)
-            policyNetworks().forEach { n ->
+            w.policyNetworks().forEach { n ->
                 OutlinedButton(onClick = { error = null; step = PolicyStep.Add(n.code, n.name) }) { Text("Add ${n.name} address") }
             }
             Text("Daily limits (rolling 24 hours)", fontWeight = FontWeight.SemiBold)

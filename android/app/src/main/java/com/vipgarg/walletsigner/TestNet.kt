@@ -70,12 +70,17 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
     var busy by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     // This tablet's other wallets: the only recipients of TRX top-ups.
-    val ownTron = remember { store.list().filter { it.id != entry.id }.map { it.public.tron } }
+    val ownTron = remember { store.list().filter { it.id != entry.id && it.real == entry.real }.map { it.public.tron } }
 
     DisposableEffect(Unit) { onDispose { wallet?.close() } }
 
-    Title("Test networks: ${entry.label}")
-    Hint("TRON Nile, Ethereum Sepolia and Bitcoin signet: test coins with no value. Practise here before any real signing exists.", WARN)
+    if (entry.real) {
+        Title("REAL MONEY: ${entry.label}")
+        Hint("This wallet signs on real networks (TRON, Ethereum). Every payment moves real money. Check each line against your paper.", BAD)
+    } else {
+        Title("Test networks: ${entry.label}")
+        Hint("TRON Nile, Ethereum Sepolia and Bitcoin signet: test coins with no value. Practise here before any real signing exists.", WARN)
+    }
     error?.let { Hint(it, BAD) }
     busy?.let { Hint(it) }
 
@@ -118,7 +123,12 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
     }
 
     when (val s = step) {
-        TestStep.Menu -> {
+        TestStep.Menu -> if (entry.real) {
+            Button(onClick = { error = null; step = TestStep.TronScan }) { Text("Sign a TRON payment: USDT or TRX top-up (REAL MONEY)") }
+            Button(onClick = { error = null; step = TestStep.EthScan }) { Text("Sign an Ethereum USDT payment (REAL MONEY)") }
+            OutlinedButton(onClick = { error = null; step = TestStep.Policy }) { Text("Allowlist, limits and signing log") }
+            OutlinedButton(onClick = onBack) { Text("Lock and go back") }
+        } else {
             Button(onClick = {
                 runCatching { w.testExportString() }
                     .onSuccess { step = TestStep.ShowExport(it) }
@@ -207,7 +217,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
         }
 
         TestStep.TronScan -> {
-            Hint("On the PC: Test send → USDT on TRON Nile → Build payment. Then scan the QR it shows.")
+            Hint(if (entry.real) "On the PC: Real send → TRON → Build payment. Then scan the QR it shows." else "On the PC: Test send → USDT on TRON Nile → Build payment. Then scan the QR it shows.")
             QrScanner(
                 prefix = "WTR1:",
                 wrongHint = "That isn't a TRON payment request from the PC (it should start with WTR1).",
@@ -233,10 +243,10 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(r.network)
-                    Text(if (r.kind == "trx") "Plain TRX top-up to your own wallet" else "Token: test USDT (TRC-20)")
+                    Text(if (r.kind == "trx") "Plain TRX top-up to your own wallet" else if (entry.real) "Token: USDT (TRC-20), REAL" else "Token: test USDT (TRC-20)")
                     Text("Recipient: \"${r.recipientLabel}\" (on this tablet's allowlist)", fontWeight = FontWeight.SemiBold)
                     GroupedAddress(r.recipient)
-                    Text("Amount: ${r.amount} test ${r.unit}", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Amount: ${r.amount} ${if (entry.real) "" else "test "}${r.unit}", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                     Text(
                         if (r.kind == "trx") "Network fee: bandwidth (free daily allowance, otherwise about 0.3 test TRX)"
                         else "Fee limit: up to ${r.feeLimitTrx} test TRX",
@@ -287,7 +297,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
         TestStep.Policy -> PolicyScreen(w, entry, store, onBack = { step = TestStep.Menu })
 
         TestStep.EthScan -> {
-            Hint("On the PC: Test send → USDT on Ethereum Sepolia → Build payment. Then scan the QR it shows.")
+            Hint(if (entry.real) "On the PC: Real send → Ethereum → Build payment. Then scan the QR it shows." else "On the PC: Test send → USDT on Ethereum Sepolia → Build payment. Then scan the QR it shows.")
             QrScanner(
                 prefix = "WER1:",
                 wrongHint = "That isn't an Ethereum payment request from the PC (it should start with WER1).",
@@ -313,11 +323,11 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(r.network)
-                    Text("Token: test USDT (ERC-20)")
+                    Text(if (entry.real) "Token: USDT (ERC-20), REAL" else "Token: test USDT (ERC-20)")
                     Text("Recipient: \"${r.recipientLabel}\" (on this tablet's allowlist)", fontWeight = FontWeight.SemiBold)
                     GroupedAddress(r.recipient)
-                    Text("Amount: ${r.amountUsdt} test USDT", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Network fee: at most ${r.maxFeeEth} test ETH")
+                    Text("Amount: ${r.amountUsdt} ${if (entry.real) "" else "test "}USDT", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Network fee: at most ${r.maxFeeEth} ${if (entry.real) "" else "test "}ETH")
                     Text("From this wallet: ${r.from}", fontFamily = FontFamily.Monospace)
                     Text("Nonce: ${r.nonce}")
                     Text("Request ID starts with: ${r.signingHash.take(8)}", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)

@@ -14,7 +14,7 @@ type EthStep =
   | { kind: "scan"; p: PreparedEth }
   | { kind: "sent"; sent: EthSent };
 
-export function EthTestSend() {
+export function EthTestSend({ real = false }: { real?: boolean }) {
   const [wallets, setWallets] = useState<WalletView[]>([]);
   const [selected, setSelected] = useState("");
   const [bal, setBal] = useState<SepoliaBalances | null>(null);
@@ -62,7 +62,7 @@ export function EthTestSend() {
   const prepare = async (e: React.FormEvent) => {
     e.preventDefault();
     const p = await run("Building the transaction…", () =>
-      api.prepareEthTestSend(selected, form.recipient.trim(), form.amount.trim()),
+      api.prepareEthTestSend(selected, form.recipient.trim(), form.amount.trim(), real),
     );
     if (p) setStep({ kind: "show", p });
   };
@@ -74,6 +74,12 @@ export function EthTestSend() {
 
   return (
     <>
+      {real && (
+        <p className="error">
+          REAL MONEY on Ethereum mainnet. Signed only by a real-money wallet on the real-network tablet build, to an
+          address on its allowlist, within its daily limit.
+        </p>
+      )}
       {error && <p className="error">{error}</p>}
       {busy && <p className="hint">{busy}</p>}
       <div className="card">
@@ -89,12 +95,14 @@ export function EthTestSend() {
                 </option>
               ))}
             </select>
-            <button onClick={() => void check()} disabled={!!busy || !selected}>
-              Check Sepolia balance
-            </button>
+            {!real && (
+              <button onClick={() => void check()} disabled={!!busy || !selected}>
+                Check Sepolia balance
+              </button>
+            )}
           </div>
         )}
-        {wallet?.eth && (
+        {wallet?.eth && !real && (
           <>
             <p className="hint">
               The same Ethereum address works on Sepolia. You need test ETH for network fees (any Sepolia faucet) and

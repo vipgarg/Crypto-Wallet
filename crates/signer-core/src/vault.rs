@@ -52,6 +52,10 @@ struct VaultContents {
     entropy_hex: String,
     uses_passphrase: bool,
     public: WalletPublic,
+    /// A real-network wallet (made by a real-networks build). Absent in
+    /// older vaults: test wallet.
+    #[serde(default)]
+    real: bool,
 }
 
 /// An unlocked stored wallet: kept only for one signing session, then dropped
@@ -63,6 +67,8 @@ pub struct UnlockedWallet {
     pub public: WalletPublic,
     pub uses_passphrase: bool,
     pub seed: SeedMaterial,
+    /// Real-network wallet (see `mode`).
+    pub real: bool,
 }
 
 /// What describes a stored wallet (everything except secrets).
@@ -96,6 +102,7 @@ pub fn create(
             entropy_hex: hex::encode(seed.entropy()),
             uses_passphrase: info.uses_passphrase,
             public: info.public.clone(),
+            real: crate::mode::Mode::of_this_build() == crate::mode::Mode::Real,
         })
         .map_err(|e| VaultError::Store(e.to_string()))?,
     );
@@ -140,6 +147,7 @@ pub fn unlock(
         public: c.public,
         uses_passphrase: c.uses_passphrase,
         seed,
+        real: c.real,
     })
 }
 

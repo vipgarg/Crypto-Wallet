@@ -22,6 +22,7 @@ pub mod btc_sign;
 pub mod entropy;
 pub mod eth_sign;
 pub mod export;
+pub mod mode;
 pub mod policy;
 pub mod seed;
 pub mod tron_sign;

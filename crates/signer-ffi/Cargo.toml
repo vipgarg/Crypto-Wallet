@@ -27,5 +27,8 @@ zeroize = "1"
 chain-eth = { path = "../chain-eth" }
 btc-send = { path = "../btc-send" }
 
+[features]
+real-networks = ["signer-core/real-networks"]
+
 [lints]
 workspace = true

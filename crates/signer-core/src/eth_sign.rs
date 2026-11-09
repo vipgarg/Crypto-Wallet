@@ -20,7 +20,14 @@ use chain_eth::EthAddress;
 use eth_tx::{Erc20Transfer, TxError};
 use thiserror::Error;
 
+use crate::mode::Mode;
 pub use eth_tx::{SEPOLIA_CHAIN_ID, SEPOLIA_USDT};
+/// Real (mainnet) USDT on Ethereum and its chain id, signed only by real
+/// wallets in a real-networks build (the PC config pins the same values).
+pub const MAINNET_USDT: &str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+pub const MAINNET_CHAIN_ID: u64 = 1;
+/// Highest worst-case fee on the real network (0.005 ETH, in wei).
+pub const MAX_FEE_WEI_REAL: u128 = 5_000_000_000_000_000;
 /// Highest gas limit accepted.
 pub const MAX_GAS_LIMIT: u64 = 120_000;
 /// Highest worst-case fee accepted (0.05 ETH, in wei).
@@ -87,15 +94,28 @@ fn decimal(v: u128, decimals: u32) -> String {
 }
 
 /// Check an unsigned transaction for signing.
-pub fn review(unsigned: &[u8], master: &Xpriv) -> Result<EthReview, EthSignError> {
+pub fn review(unsigned: &[u8], master: &Xpriv, mode: Mode) -> Result<EthReview, EthSignError> {
+    if !mode.allowed() {
+        return refuse("this is a real-money wallet, and this build signs only on test networks");
+    }
     let t = Erc20Transfer::decode_unsigned(unsigned)?;
     let (_, me) = key(master)?;
-    if t.chain_id != SEPOLIA_CHAIN_ID {
-        return refuse("this isn't the Ethereum Sepolia test network (this build only signs test-network USDT)");
+    let (chain, token, max_fee) = match mode {
+        Mode::Test => (SEPOLIA_CHAIN_ID, SEPOLIA_USDT, MAX_FEE_WEI),
+        Mode::Real => (MAINNET_CHAIN_ID, MAINNET_USDT, MAX_FEE_WEI_REAL),
+    };
+    if t.chain_id != chain {
+        return refuse(match mode {
+            Mode::Test => "this isn't the Ethereum Sepolia test network (this wallet only signs test-network USDT)",
+            Mode::Real => "this isn't Ethereum mainnet",
+        });
     }
-    let usdt: EthAddress = SEPOLIA_USDT.parse().map_err(|_| EthSignError::Derivation)?;
+    let usdt: EthAddress = token.parse().map_err(|_| EthSignError::Derivation)?;
     if t.token != usdt {
-        return refuse("this isn't the Sepolia test USDT contract");
+        return refuse(match mode {
+            Mode::Test => "this isn't the Sepolia test USDT contract",
+            Mode::Real => "this isn't the real USDT contract on Ethereum",
+        });
     }
     if t.amount == 0 {
         return refuse("the amount is zero");
@@ -112,11 +132,17 @@ pub fn review(unsigned: &[u8], master: &Xpriv) -> Result<EthReview, EthSignError
         return refuse("the priority fee is higher than the max fee");
     }
     let worst = u128::from(t.gas_limit).saturating_mul(t.max_fee_per_gas);
-    if worst > MAX_FEE_WEI {
-        return refuse("the maximum network fee is over 0.05 test ETH");
+    if worst > max_fee {
+        return refuse(match mode {
+            Mode::Test => "the maximum network fee is over 0.05 test ETH",
+            Mode::Real => "the maximum network fee is over 0.005 ETH",
+        });
     }
     Ok(EthReview {
-        network: "Ethereum Sepolia (test network, coins have no value)".into(),
+        network: match mode {
+            Mode::Test => "Ethereum Sepolia (test network, coins have no value)".into(),
+            Mode::Real => "Ethereum mainnet: REAL MONEY".into(),
+        },
         from: me.to_checksum(),
         recipient: t.recipient.to_checksum(),
         amount_usdt: decimal(t.amount, 6),
@@ -131,8 +157,12 @@ pub fn review(unsigned: &[u8], master: &Xpriv) -> Result<EthReview, EthSignError
 }
 
 /// Sign the reviewed transaction (checks run again). Returns r ‖ s ‖ y_parity.
-pub fn sign(unsigned: &[u8], master: &Xpriv) -> Result<([u8; 65], EthReview), EthSignError> {
-    let review = review(unsigned, master)?;
+pub fn sign(
+    unsigned: &[u8],
+    master: &Xpriv,
+    mode: Mode,
+) -> Result<([u8; 65], EthReview), EthSignError> {
+    let review = review(unsigned, master, mode)?;
     let (sk, me) = key(master)?;
     let sig = eth_tx::sign(unsigned, &sk);
     if eth_tx::recover_signer(unsigned, &sig)? != me {
@@ -176,10 +206,10 @@ mod tests {
     fn honest_transfer_reviews_and_signs() {
         let m = master();
         let raw = tx().encode_unsigned();
-        let r = review(&raw, &m).expect("review");
+        let r = review(&raw, &m, Mode::Test).expect("review");
         assert_eq!(r.amount_usdt, "7.25");
         assert_eq!(r.max_fee_eth, "0.0013");
-        let (sig, _) = sign(&raw, &m).expect("sign");
+        let (sig, _) = sign(&raw, &m, Mode::Test).expect("sign");
         assert_eq!(
             eth_tx::recover_signer(&raw, &sig),
             Ok(wallet_address(&m).expect("me"))
@@ -203,26 +233,47 @@ mod tests {
         let m = master();
         let mut t = tx();
         t.chain_id = 1;
-        refused(review(&t.encode_unsigned(), &m), "Sepolia");
+        refused(review(&t.encode_unsigned(), &m, Mode::Test), "Sepolia");
         let mut t = tx();
         t.token = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
             .parse()
             .expect("mainnet usdt");
-        refused(review(&t.encode_unsigned(), &m), "test USDT");
+        refused(review(&t.encode_unsigned(), &m, Mode::Test), "test USDT");
         let mut t = tx();
         t.amount = 0;
-        refused(review(&t.encode_unsigned(), &m), "zero");
+        refused(review(&t.encode_unsigned(), &m, Mode::Test), "zero");
         let mut t = tx();
         t.recipient = wallet_address(&m).expect("me");
-        refused(review(&t.encode_unsigned(), &m), "itself");
+        refused(review(&t.encode_unsigned(), &m, Mode::Test), "itself");
         let mut t = tx();
         t.gas_limit = 500_000;
-        refused(review(&t.encode_unsigned(), &m), "gas limit");
+        refused(review(&t.encode_unsigned(), &m, Mode::Test), "gas limit");
         let mut t = tx();
         t.max_fee_per_gas = 1_000_000_000_000;
-        refused(review(&t.encode_unsigned(), &m), "0.05");
+        refused(review(&t.encode_unsigned(), &m, Mode::Test), "0.05");
         let mut t = tx();
         t.max_priority_fee_per_gas = t.max_fee_per_gas + 1;
-        refused(review(&t.encode_unsigned(), &m), "priority");
+        refused(review(&t.encode_unsigned(), &m, Mode::Test), "priority");
+    }
+
+    #[test]
+    fn real_mode_only_in_a_real_build_and_only_mainnet_usdt() {
+        let m = master();
+        let mut t = tx();
+        t.chain_id = MAINNET_CHAIN_ID;
+        t.token = MAINNET_USDT.parse().expect("usdt");
+        if cfg!(feature = "real-networks") {
+            let r = review(&t.encode_unsigned(), &m, Mode::Real).expect("real");
+            assert!(r.network.contains("REAL"));
+            refused(review(&tx().encode_unsigned(), &m, Mode::Real), "mainnet");
+            t.max_fee_per_gas = 100_000_000_000; // 65k gas x 100 gwei = 0.0065 ETH
+            refused(review(&t.encode_unsigned(), &m, Mode::Real), "0.005");
+        } else {
+            refused(
+                review(&t.encode_unsigned(), &m, Mode::Real),
+                "test networks",
+            );
+        }
+        refused(review(&t.encode_unsigned(), &m, Mode::Test), "Sepolia");
     }
 }

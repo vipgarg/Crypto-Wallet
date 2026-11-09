@@ -26,6 +26,10 @@ use tron_tx::{TronTx, TxError};
 
 /// The only TRC-20 contract this build signs for: Nile test USDT.
 pub use tron_tx::NILE_USDT;
+/// Real (mainnet) USDT on TRON, signed only by real wallets in a
+/// real-networks build (the PC config pins the same value).
+pub const MAINNET_USDT: &str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+use crate::mode::Mode;
 /// Highest fee limit accepted (30 TRX, in sun).
 pub const MAX_FEE_LIMIT_SUN: u64 = 30_000_000;
 /// Longest validity accepted (expiration minus timestamp).
@@ -108,7 +112,11 @@ pub fn review(
     master: &Xpriv,
     now_ms: u64,
     own: &[TronAddress],
+    mode: Mode,
 ) -> Result<TronReview, TronSignError> {
+    if !mode.allowed() {
+        return refuse("this is a real-money wallet, and this build signs only on test networks");
+    }
     let tx = TronTx::decode_raw(raw)?;
     let (_, me) = key(master)?;
     if tx.owner() != me {
@@ -130,11 +138,16 @@ pub fn review(
     }
     let (kind, unit, amount, fee) = match &tx {
         TronTx::Usdt(t) => {
-            let usdt: TronAddress = NILE_USDT.parse().map_err(|_| TronSignError::Derivation)?;
+            let pinned = match mode {
+                Mode::Test => NILE_USDT,
+                Mode::Real => MAINNET_USDT,
+            };
+            let usdt: TronAddress = pinned.parse().map_err(|_| TronSignError::Derivation)?;
             if t.token != usdt {
-                return refuse(
-                    "this isn't the TRON Nile test USDT contract (this build only signs test-network USDT)",
-                );
+                return refuse(match mode {
+                    Mode::Test => "this isn't the TRON Nile test USDT contract (this wallet only signs test-network USDT)",
+                    Mode::Real => "this isn't the real USDT contract on TRON",
+                });
             }
             if t.amount == 0 {
                 return refuse("the amount is zero");
@@ -163,7 +176,10 @@ pub fn review(
         }
     };
     Ok(TronReview {
-        network: "TRON Nile (test network, coins have no value)".into(),
+        network: match mode {
+            Mode::Test => "TRON Nile (test network, coins have no value)".into(),
+            Mode::Real => "TRON mainnet: REAL MONEY".into(),
+        },
         kind: kind.into(),
         from: me.to_base58(),
         recipient: tx.recipient().to_base58(),
@@ -186,8 +202,9 @@ pub fn sign(
     master: &Xpriv,
     now_ms: u64,
     own: &[TronAddress],
+    mode: Mode,
 ) -> Result<([u8; 65], TronReview), TronSignError> {
-    let review = review(raw, master, now_ms, own)?;
+    let review = review(raw, master, now_ms, own, mode)?;
     let (sk, me) = key(master)?;
     let sk2 = secp256k1::SecretKey::from_slice(&sk.secret_bytes())
         .map_err(|_| TronSignError::Derivation)?;
@@ -235,11 +252,11 @@ mod tests {
         let m = master();
         let me = wallet_address(&m).expect("me");
         let raw = tx(me).encode_raw();
-        let r = review(&raw, &m, NOW, &[]).expect("review");
+        let r = review(&raw, &m, NOW, &[], Mode::Test).expect("review");
         assert_eq!((r.amount.as_str(), r.unit.as_str()), ("12.5", "USDT"));
         assert_eq!(r.fee_limit_trx, "30");
         assert_eq!(r.recipient, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
-        let (sig, _) = sign(&raw, &m, NOW, &[]).expect("sign");
+        let (sig, _) = sign(&raw, &m, NOW, &[], Mode::Test).expect("sign");
         assert_eq!(tron_tx::recover_signer(&raw, &sig), Ok(me));
     }
 
@@ -266,36 +283,45 @@ mod tests {
         t.token = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
             .parse()
             .expect("mainnet usdt");
-        refused(review(&t.encode_raw(), &m, NOW, &[]), "test USDT");
+        refused(
+            review(&t.encode_raw(), &m, NOW, &[], Mode::Test),
+            "test USDT",
+        );
 
         let mut t = tx(me);
         t.owner = "TUUSMd58eC3fKx3fn7whxJyr1FR56tgaP8".parse().expect("other");
         refused(
-            review(&t.encode_raw(), &m, NOW, &[]),
+            review(&t.encode_raw(), &m, NOW, &[], Mode::Test),
             "isn't from this wallet",
         );
 
         let mut t = tx(me);
         t.fee_limit_sun = 31_000_000;
-        refused(review(&t.encode_raw(), &m, NOW, &[]), "fee limit");
+        refused(
+            review(&t.encode_raw(), &m, NOW, &[], Mode::Test),
+            "fee limit",
+        );
 
         let mut t = tx(me);
         t.expiration_ms = t.timestamp_ms + 24 * 3600 * 1000;
-        refused(review(&t.encode_raw(), &m, NOW, &[]), "validity");
+        refused(
+            review(&t.encode_raw(), &m, NOW, &[], Mode::Test),
+            "validity",
+        );
 
         let t = tx(me);
         refused(
-            review(&t.encode_raw(), &m, NOW + 3600 * 1000, &[]),
+            review(&t.encode_raw(), &m, NOW + 3600 * 1000, &[], Mode::Test),
             "expired",
         );
 
         let mut t = tx(me);
         t.amount = 0;
-        refused(review(&t.encode_raw(), &m, NOW, &[]), "zero");
+        refused(review(&t.encode_raw(), &m, NOW, &[], Mode::Test), "zero");
 
         let mut t = tx(me);
         t.recipient = me;
-        refused(review(&t.encode_raw(), &m, NOW, &[]), "itself");
+        refused(review(&t.encode_raw(), &m, NOW, &[], Mode::Test), "itself");
     }
 
     #[test]
@@ -313,27 +339,53 @@ mod tests {
             amount_sun: 25_000_000,
         };
         let raw = t.encode_raw();
-        refused(review(&raw, &m, NOW, &[]), "your own wallets");
-        let r = review(&raw, &m, NOW, &[other_own]).expect("own");
+        refused(review(&raw, &m, NOW, &[], Mode::Test), "your own wallets");
+        let r = review(&raw, &m, NOW, &[other_own], Mode::Test).expect("own");
         assert_eq!(
             (r.kind.as_str(), r.amount.as_str(), r.unit.as_str()),
             ("trx", "25", "TRX")
         );
         assert_eq!(r.fee_limit_trx, "0");
-        let (sig, _) = sign(&raw, &m, NOW, &[other_own]).expect("sign");
+        let (sig, _) = sign(&raw, &m, NOW, &[other_own], Mode::Test).expect("sign");
         assert_eq!(tron_tx::recover_signer(&raw, &sig), Ok(me));
         let mut big = t.clone();
         big.amount_sun = MAX_TRX_TOPUP_SUN + 1;
         refused(
-            review(&big.encode_raw(), &m, NOW, &[other_own]),
+            review(&big.encode_raw(), &m, NOW, &[other_own], Mode::Test),
             "limited to 200",
         );
         let mut stale = t;
         stale.expiration_ms = NOW - 3_600_000;
         stale.timestamp_ms = NOW - 3_660_000;
         refused(
-            review(&stale.encode_raw(), &m, NOW, &[other_own]),
+            review(&stale.encode_raw(), &m, NOW, &[other_own], Mode::Test),
             "expired",
         );
+    }
+
+    #[test]
+    fn real_mode_only_in_a_real_build_and_only_real_usdt() {
+        let m = master();
+        let me = wallet_address(&m).expect("me");
+        let mut t = tx(me);
+        if cfg!(feature = "real-networks") {
+            refused(
+                review(&t.encode_raw(), &m, NOW, &[], Mode::Real),
+                "real USDT",
+            );
+            t.token = MAINNET_USDT.parse().expect("usdt");
+            let r = review(&t.encode_raw(), &m, NOW, &[], Mode::Real).expect("real");
+            assert!(r.network.contains("REAL"));
+            refused(
+                review(&t.encode_raw(), &m, NOW, &[], Mode::Test),
+                "test USDT",
+            );
+        } else {
+            t.token = MAINNET_USDT.parse().expect("usdt");
+            refused(
+                review(&t.encode_raw(), &m, NOW, &[], Mode::Real),
+                "test networks",
+            );
+        }
     }
 }

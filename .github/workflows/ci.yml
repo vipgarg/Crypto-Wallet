@@ -36,6 +36,11 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+      # The tablet core as a real-network build would compile it: real
+      # wallets refuse test payments, test wallets refuse real ones.
+      - name: Tests (real-network tablet build)
+        run: cargo test -p signer-core -p signer-ffi --features signer-ffi/real-networks --locked
+
       - name: Clippy (warnings are errors)
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 

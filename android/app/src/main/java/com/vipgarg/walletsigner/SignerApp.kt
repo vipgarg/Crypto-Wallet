@@ -195,6 +195,9 @@ private fun HomeScreen(
 ) {
     val wallets = remember { store.list() }
     Title("Wallets")
+    if (BuildConfig.REAL_NETWORKS) {
+        Hint("REAL-NETWORK BUILD: wallets made here sign REAL MONEY (TRON and Ethereum). Wallets from test builds still sign test networks only.", BAD)
+    }
     if (wallets.isEmpty()) Hint("No wallets yet.")
     wallets.forEach { w ->
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -639,9 +642,16 @@ private fun DetailScreen(
         }
     }
     HorizontalDivider()
-    Text("Test networks (TRON Nile, Bitcoin signet)", fontWeight = FontWeight.SemiBold)
+    if (entry.real) {
+        Text("Sign payments: REAL MONEY (TRON, Ethereum)", fontWeight = FontWeight.SemiBold, color = BAD)
+    } else {
+        Text("Test networks (TRON Nile, Ethereum Sepolia, Bitcoin signet)", fontWeight = FontWeight.SemiBold)
+    }
     if (entry.stateless) {
-        Hint("Not available for Vault-tier wallets (their seed isn't stored here). Use a Spending test wallet.")
+        Hint("Not available for Vault-tier wallets (their seed isn't stored here). Use a Spending wallet.")
+    } else if (entry.real) {
+        Hint("Sign real payments built on the PC (Real send). Only to addresses on this wallet's allowlist, within its daily limits.")
+        OutlinedButton(onClick = onTestNet) { Text("Sign payments (REAL MONEY)") }
     } else {
         Hint("Practise signing with test coins that have no value: export the test wallet to the PC, then sign test payments.")
         OutlinedButton(onClick = onTestNet) { Text("Test network") }

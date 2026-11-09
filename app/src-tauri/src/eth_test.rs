@@ -20,6 +20,16 @@ pub const MIN_GAS: u64 = 60_000;
 pub const MAX_GAS: u64 = 120_000;
 /// Worst-case fee allowed (the tablet accepts up to 0.05 ETH).
 pub const MAX_FEE_WEI: u128 = 50_000_000_000_000_000;
+/// The same on the real network (the tablet accepts up to 0.005 ETH).
+pub const MAX_FEE_WEI_REAL: u128 = 5_000_000_000_000_000;
+
+fn explorer(config: &NetworkConfig) -> &'static str {
+    if crate::real_send::is_real(config) {
+        "https://etherscan.io"
+    } else {
+        "https://sepolia.etherscan.io"
+    }
+}
 /// Priority fee when the node doesn't suggest one (1.5 gwei).
 const DEFAULT_TIP: u128 = 1_500_000_000;
 
@@ -100,10 +110,7 @@ pub async fn balances<H: HttpClient>(
         eth: decimal(eth, 18),
         usdt: decimal(usdt_v, 6),
         source,
-        explorer_url: format!(
-            "https://sepolia.etherscan.io/address/{}",
-            addr.to_checksum()
-        ),
+        explorer_url: format!("{}/address/{}", explorer(config), addr.to_checksum()),
     })
 }
 
@@ -136,8 +143,13 @@ pub async fn build<H: HttpClient>(
 ) -> Result<Built, String> {
     let token = usdt(config)?;
     let (chain, _) = ask(http, config, &req("eth_chainId", json!([])), quantity).await?;
-    if chain != u128::from(eth_tx::SEPOLIA_CHAIN_ID) {
-        return Err("The configured node isn't on the Sepolia test network.".into());
+    let (chain_id, max_fee_cap) = if crate::real_send::is_real(config) {
+        (1u64, MAX_FEE_WEI_REAL)
+    } else {
+        (eth_tx::SEPOLIA_CHAIN_ID, MAX_FEE_WEI)
+    };
+    if chain != u128::from(chain_id) {
+        return Err("A configured node is on a different network than expected.".into());
     }
     let (eth_balance, _) = ask(http, config, &rpc::eth_get_balance(&owner), quantity).await?;
     let (token_balance, _) = ask(http, config, &rpc::erc20_balance_of(&token, &owner), |v| {
@@ -192,8 +204,11 @@ pub async fn build<H: HttpClient>(
         .unwrap_or(MAX_GAS)
         .clamp(MIN_GAS, MAX_GAS);
     let worst = u128::from(gas).saturating_mul(max_fee);
-    if worst > MAX_FEE_WEI {
-        return Err("Sepolia network fees are unusually high right now (over 0.05 test ETH). Try again later.".into());
+    if worst > max_fee_cap {
+        return Err(format!(
+            "Network fees are unusually high right now (over {} ETH). Try again later.",
+            decimal(max_fee_cap, 18)
+        ));
     }
     if eth_balance < worst {
         return Err(format!(
@@ -204,7 +219,7 @@ pub async fn build<H: HttpClient>(
     }
     Ok(Built {
         tx: Erc20Transfer {
-            chain_id: eth_tx::SEPOLIA_CHAIN_ID,
+            chain_id,
             nonce: u64::try_from(nonce).map_err(|_| "Unusual nonce.".to_owned())?,
             max_priority_fee_per_gas: tip,
             max_fee_per_gas: max_fee,
@@ -306,7 +321,7 @@ pub async fn broadcast<H: HttpClient>(
         ));
     }
     Ok(EthSent {
-        explorer_url: format!("https://sepolia.etherscan.io/tx/{txid}"),
+        explorer_url: format!("{}/tx/{txid}", explorer(config)),
         txid,
         accepted_by,
         errors,

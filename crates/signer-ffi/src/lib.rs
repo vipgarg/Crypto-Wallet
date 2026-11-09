@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use signer_core::mode::Mode;
 use signer_core::policy::{self, Asset, Net, Payment, Policy, PolicyError};
 use signer_core::{
     accounts, attestation, btc_sign, entropy, eth_sign, export, seed, tron_sign, vault,
@@ -218,6 +219,35 @@ impl UnlockedWallet {
         self.inner.seed.master(pass).map_err(seed_err)
     }
 
+    fn mode(&self) -> Mode {
+        Mode::from_real(self.inner.real)
+    }
+
+    fn require_btc(&self) -> Result<(), SignerError> {
+        if self.mode() == Mode::Real {
+            return Err(SignerError::Sign {
+                msg: "Bitcoin isn't signed by real-money wallets in this version".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn require_mode_net(&self, net: Net) -> Result<(), SignerError> {
+        if net.is_test() != (self.mode() == Mode::Test) {
+            return Err(SignerError::Input {
+                msg: match self.mode() {
+                    Mode::Test => {
+                        "this is a test wallet: it only has test-network addresses".into()
+                    }
+                    Mode::Real => {
+                        "this is a real-money wallet: it has no test-network addresses".into()
+                    }
+                },
+            });
+        }
+        Ok(())
+    }
+
     /// Open this wallet's signing policy (sealed with a key from its seed).
     fn policy(
         &self,
@@ -337,10 +367,20 @@ pub struct NetRecord {
     pub name: String,
 }
 
+/// True for a real-networks build (signs real money with real wallets).
 #[uniffi::export]
-pub fn policy_networks() -> Vec<NetRecord> {
+pub fn real_networks_build() -> bool {
+    Mode::of_this_build() == Mode::Real
+}
+
+fn nets_for(mode: Mode) -> impl Iterator<Item = Net> {
     Net::ALL
         .into_iter()
+        .filter(move |n| n.is_test() == (mode == Mode::Test))
+}
+
+fn policy_networks_for(mode: Mode) -> Vec<NetRecord> {
+    nets_for(mode)
         .map(|n| NetRecord {
             code: n.code().into(),
             name: n.name().into(),
@@ -417,9 +457,12 @@ fn eth_err(e: eth_sign::EthSignError) -> SignerError {
     SignerError::Sign { msg: e.to_string() }
 }
 
-fn eth_payment(r: &eth_sign::EthReview) -> Payment {
+fn eth_payment(r: &eth_sign::EthReview, mode: Mode) -> Payment {
     Payment {
-        asset: Asset::UsdtEthSepolia,
+        asset: match mode {
+            Mode::Test => Asset::UsdtEthSepolia,
+            Mode::Real => Asset::UsdtEth,
+        },
         recipient: r.recipient.clone(),
         amount: r.amount_base,
     }
@@ -497,6 +540,7 @@ impl UnlockedWallet {
         let bytes =
             export::psbt_from_qr(&qr_text).map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let psbt = btc_sign::parse(&bytes).map_err(sign_err)?;
+        self.require_btc()?;
         let r = btc_sign::review(&psbt, &self.master()?).map_err(sign_err)?;
         let (p, _) = self.policy(policy, now_ms)?;
         let pay = btc_payment(&r);
@@ -521,13 +565,14 @@ impl UnlockedWallet {
         let raw = export::bytes_from_qr(export::TRON_REQUEST_PREFIX, &qr_text)
             .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let own = own_addresses(&own_tron);
-        let r = tron_sign::review(&raw, &self.master()?, now_ms, &own).map_err(tron_err)?;
+        let r = tron_sign::review(&raw, &self.master()?, now_ms, &own, self.mode())
+            .map_err(tron_err)?;
         let (p, _) = self.policy(policy, now_ms)?;
-        let pay = tron_payment(&r);
+        let pay = tron_payment(&r, self.mode());
         p.check(&pay, now_ms).map_err(policy_err)?;
         let mut out: TronReviewRecord = r.into();
         out.recipient_label = p
-            .label_of(Net::TronNile, &pay.recipient)
+            .label_of(pay.asset.net(), &pay.recipient)
             .unwrap_or_default();
         Ok(out)
     }
@@ -548,7 +593,8 @@ impl UnlockedWallet {
             .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let master = self.master()?;
         let own = own_addresses(&own_tron);
-        let review = tron_sign::review(&raw, &master, now_ms, &own).map_err(tron_err)?;
+        let review =
+            tron_sign::review(&raw, &master, now_ms, &own, self.mode()).map_err(tron_err)?;
         if review.txid != expected_txid {
             return Err(SignerError::Sign {
                 msg: "the request changed since it was reviewed".into(),
@@ -568,9 +614,10 @@ impl UnlockedWallet {
         }
         let (mut p, key) = self.policy(policy, now_ms)?;
         let receipt = p
-            .record(&tron_payment(&review), &review.txid, now_ms)
+            .record(&tron_payment(&review, self.mode()), &review.txid, now_ms)
             .map_err(policy_err)?;
-        let (sig, _) = tron_sign::sign(&raw, &master, now_ms, &own).map_err(tron_err)?;
+        let (sig, _) =
+            tron_sign::sign(&raw, &master, now_ms, &own, self.mode()).map_err(tron_err)?;
         // txid (32) ‖ signature (65) ‖ receipt: log number (8) ‖ log head (32).
         let mut out = tron_tx::txid(&raw).to_vec();
         out.extend_from_slice(&sig);
@@ -598,6 +645,7 @@ impl UnlockedWallet {
             export::psbt_from_qr(&qr_text).map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let psbt = btc_sign::parse(&bytes).map_err(sign_err)?;
         let master = self.master()?;
+        self.require_btc()?;
         let review = btc_sign::review(&psbt, &master).map_err(sign_err)?;
         if review.txid != expected_txid {
             return Err(SignerError::Sign {
@@ -637,13 +685,13 @@ impl UnlockedWallet {
     ) -> Result<EthReviewRecord, SignerError> {
         let raw = export::bytes_from_qr(export::ETH_REQUEST_PREFIX, &qr_text)
             .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
-        let r = eth_sign::review(&raw, &self.master()?).map_err(eth_err)?;
+        let r = eth_sign::review(&raw, &self.master()?, self.mode()).map_err(eth_err)?;
         let (p, _) = self.policy(policy, now_ms)?;
-        let pay = eth_payment(&r);
+        let pay = eth_payment(&r, self.mode());
         p.check(&pay, now_ms).map_err(policy_err)?;
         Ok(EthReviewRecord {
             recipient_label: p
-                .label_of(Net::EthSepolia, &pay.recipient)
+                .label_of(pay.asset.net(), &pay.recipient)
                 .unwrap_or_default(),
             network: r.network,
             from: r.from,
@@ -669,7 +717,7 @@ impl UnlockedWallet {
         let raw = export::bytes_from_qr(export::ETH_REQUEST_PREFIX, &qr_text)
             .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let master = self.master()?;
-        let review = eth_sign::review(&raw, &master).map_err(eth_err)?;
+        let review = eth_sign::review(&raw, &master, self.mode()).map_err(eth_err)?;
         if review.signing_hash != expected_hash {
             return Err(SignerError::Sign {
                 msg: "the request changed since it was reviewed".into(),
@@ -682,9 +730,13 @@ impl UnlockedWallet {
         }
         let (mut p, key) = self.policy(policy, now_ms)?;
         let receipt = p
-            .record(&eth_payment(&review), &review.signing_hash, now_ms)
+            .record(
+                &eth_payment(&review, self.mode()),
+                &review.signing_hash,
+                now_ms,
+            )
             .map_err(policy_err)?;
-        let (sig, _) = eth_sign::sign(&raw, &master).map_err(eth_err)?;
+        let (sig, _) = eth_sign::sign(&raw, &master, self.mode()).map_err(eth_err)?;
         let mut out = sig.to_vec();
         out.extend_from_slice(&receipt.to_bytes());
         Ok(SignedRecord {
@@ -702,7 +754,22 @@ impl UnlockedWallet {
         policy: Option<Vec<u8>>,
         now_ms: u64,
     ) -> Result<PolicyRecord, SignerError> {
-        Ok(self.policy(policy, now_ms)?.0.view(now_ms).into())
+        let mut v: PolicyRecord = self.policy(policy, now_ms)?.0.view(now_ms).into();
+        let mode = self.mode();
+        v.limits.retain(|l| {
+            Asset::parse(&l.asset).is_ok_and(|a| a.net().is_test() == (mode == Mode::Test))
+        });
+        Ok(v)
+    }
+
+    /// True for a real-money wallet (made by a real-networks build).
+    pub fn is_real(&self) -> bool {
+        self.inner.real
+    }
+
+    /// The networks this wallet's allowlist can hold.
+    pub fn policy_networks(&self) -> Vec<NetRecord> {
+        policy_networks_for(self.mode())
     }
 
     /// Add an address (usable after the waiting period). Returns the new
@@ -717,6 +784,7 @@ impl UnlockedWallet {
     ) -> Result<Vec<u8>, SignerError> {
         let (mut p, key) = self.policy(policy, now_ms)?;
         let net = Net::parse(&net).map_err(policy_err)?;
+        self.require_mode_net(net)?;
         p.add_address(net, &address, &label, now_ms)
             .map_err(policy_err)?;
         Ok(p.seal(&key))
@@ -746,6 +814,7 @@ impl UnlockedWallet {
     ) -> Result<Vec<u8>, SignerError> {
         let (mut p, key) = self.policy(policy, now_ms)?;
         let asset = Asset::parse(&asset).map_err(policy_err)?;
+        self.require_mode_net(asset.net())?;
         let amount = asset.parse_amount(&daily).map_err(policy_err)?;
         p.set_limit(asset, amount, now_ms).map_err(policy_err)?;
         Ok(p.seal(&key))
@@ -760,12 +829,13 @@ fn btc_payment(r: &btc_sign::Review) -> Payment {
     }
 }
 
-fn tron_payment(r: &tron_sign::TronReview) -> Payment {
+fn tron_payment(r: &tron_sign::TronReview, mode: Mode) -> Payment {
     Payment {
-        asset: if r.kind == "trx" {
-            Asset::TrxNile
-        } else {
-            Asset::UsdtTronNile
+        asset: match (r.kind == "trx", mode) {
+            (true, Mode::Test) => Asset::TrxNile,
+            (false, Mode::Test) => Asset::UsdtTronNile,
+            (true, Mode::Real) => Asset::Trx,
+            (false, Mode::Real) => Asset::UsdtTron,
         },
         recipient: r.recipient.clone(),
         amount: r.amount_base,
@@ -1114,6 +1184,56 @@ mod tests {
         );
     }
 
+    /// In a real-networks build, a new wallet is a real one: it refuses
+    /// test-network payments and Bitcoin, and its allowlist has no test
+    /// networks.
+    fn real_wallet_signs_no_test_payments(s: &Seed) {
+        let public = s.derive_public(String::new()).expect("pub");
+        let vault = s
+            .seal_vault(
+                "spend-02".into(),
+                "Spending".into(),
+                "spending".into(),
+                public,
+                false,
+                "vault password 123".into(),
+            )
+            .expect("seal");
+        let w = unlock_vault(vault, "vault password 123".into(), String::new()).expect("unlock");
+        assert!(w.is_real());
+        assert!(w
+            .policy_networks()
+            .iter()
+            .all(|n| n.code == "tron" || n.code == "eth"));
+        assert!(w
+            .policy_add_address(
+                None,
+                "tron-nile".into(),
+                "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".into(),
+                "x".into(),
+                0
+            )
+            .is_err());
+        let me: chain_tron::TronAddress = w.public().tron.parse().expect("tron");
+        let now: u64 = 1_800_000_000_000;
+        let t = tron_tx::Trc20Transfer {
+            ref_block_bytes: [1, 2],
+            ref_block_hash: [3; 8],
+            expiration_ms: now + 540_000,
+            timestamp_ms: now,
+            fee_limit_sun: 30_000_000,
+            owner: me,
+            token: tron_tx::NILE_USDT.parse().expect("usdt"),
+            recipient: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("to"),
+            amount: 1,
+        };
+        let qr = export::bytes_to_qr(export::TRON_REQUEST_PREFIX, &t.encode_raw()).expect("qr");
+        let e = w.review_tron(qr, now, None, vec![]).expect_err("nile");
+        assert!(e.to_string().contains("real USDT"), "{e}");
+        let v = w.policy_view(None, now).expect("view");
+        assert!(v.limits.iter().all(|l| l.name.contains("REAL")));
+    }
+
     fn hex_of(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
     }
@@ -1142,7 +1262,11 @@ mod tests {
         let qr = qr_code(exp).expect("qr");
         assert_eq!(qr.modules.len(), (qr.size * qr.size) as usize);
         let restored = restore_seed(s.words().expect("w")).expect("restore");
-        test_payment_through_the_ffi(&s);
+        if real_networks_build() {
+            real_wallet_signs_no_test_payments(&s);
+        } else {
+            test_payment_through_the_ffi(&s);
+        }
         assert_eq!(
             restored.derive_public(String::new()).expect("p").eth,
             s.derive_public(String::new()).expect("p").eth

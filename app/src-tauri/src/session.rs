@@ -77,12 +77,18 @@ pub struct Settings {
     /// wallets keep their Bitcoin key, it is just hidden and not queried.
     #[serde(default = "yes")]
     pub bitcoin_enabled: bool,
+    /// Real-network sending (real money). Off until the owner has passed
+    /// the release gates and switched it on (Settings, with a typed
+    /// confirmation). Older stores load with it off.
+    #[serde(default)]
+    pub real_sending: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             bitcoin_enabled: true,
+            real_sending: false,
         }
     }
 }

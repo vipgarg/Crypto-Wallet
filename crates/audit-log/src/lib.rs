@@ -58,6 +58,8 @@ pub enum Event {
     SettingsChanged,
     /// PC safety checks reported a failure or warning.
     ChecksProblem,
+    /// A real-network (real money) payment was sent.
+    RealPaymentSent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

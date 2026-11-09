@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod eth_test;
 pub mod qr;
+pub mod real_send;
 pub mod session;
 pub mod testnet;
 pub mod tron_test;
@@ -94,6 +95,7 @@ pub fn run() {
             commands::finish_test_send,
             commands::get_settings,
             commands::set_bitcoin_enabled,
+            commands::set_real_sending,
             commands::get_nile_balances,
             commands::prepare_tron_test_send,
             commands::finish_tron_test_send,

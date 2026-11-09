@@ -135,13 +135,14 @@ private fun signingCheck(context: Context): Check {
             "App signed with your key",
             false,
             "Not pinned yet.$kind Signing certificate SHA-256:\n${grouped(actual)}\nCompare it with the one shown when you made the key (keytool -list -v). Once it matches, it gets pinned and checked on every start.",
-            critical = false,
+            // A real-network build must never run without the pin.
+            critical = BuildConfig.REAL_NETWORKS,
         )
         actual == expected -> Check(
             "App signed with your key",
             !debuggable,
             if (debuggable) "Matches the pinned key, but this is a debug build." else "Matches the pinned key: ${grouped(actual).take(9)}…${grouped(actual).takeLast(9)}",
-            critical = false,
+            critical = BuildConfig.REAL_NETWORKS,
         )
         else -> Check(
             "App signed with your key",

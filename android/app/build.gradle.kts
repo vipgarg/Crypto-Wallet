@@ -15,6 +15,13 @@ val pinnedSigningCert: String = rootProject.file("signing-cert.sha256").let { f 
     v
 }
 
+// Real-network build (signs real money with wallets made by it): only when
+// CI is asked for it (-PrealNetworks=true), and never without the pinned key.
+val realNetworks: Boolean = (findProperty("realNetworks") as String?) == "true"
+require(!realNetworks || pinnedSigningCert.isNotEmpty()) {
+    "A real-network build needs the signing certificate pinned in android/signing-cert.sha256"
+}
+
 android {
     namespace = "com.vipgarg.walletsigner"
     compileSdk = 35
@@ -24,10 +31,11 @@ android {
         minSdk = 29
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0-testnet"
+        versionName = if (realNetworks) "0.1.0" else "0.1.0-testnet"
         // The tablet is 64-bit ARM; the Rust core is built for it by CI.
         ndk { abiFilters += "arm64-v8a" }
         buildConfigField("String", "EXPECTED_SIGNING_CERT", "\"$pinnedSigningCert\"")
+        buildConfigField("boolean", "REAL_NETWORKS", realNetworks.toString())
     }
 
     buildTypes {

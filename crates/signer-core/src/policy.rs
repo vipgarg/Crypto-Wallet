@@ -67,16 +67,27 @@ pub enum Net {
     TronNile,
     EthSepolia,
     BtcSignet,
+    /// Real networks (real-networks builds only).
+    Tron,
+    Eth,
 }
 
 impl Net {
-    pub const ALL: [Net; 3] = [Net::TronNile, Net::EthSepolia, Net::BtcSignet];
+    pub const ALL: [Net; 5] = [
+        Net::TronNile,
+        Net::EthSepolia,
+        Net::BtcSignet,
+        Net::Tron,
+        Net::Eth,
+    ];
 
     pub fn code(self) -> &'static str {
         match self {
             Net::TronNile => "tron-nile",
             Net::EthSepolia => "eth-sepolia",
             Net::BtcSignet => "btc-signet",
+            Net::Tron => "tron",
+            Net::Eth => "eth",
         }
     }
     pub fn name(self) -> &'static str {
@@ -84,6 +95,8 @@ impl Net {
             Net::TronNile => "TRON Nile (test)",
             Net::EthSepolia => "Ethereum Sepolia (test)",
             Net::BtcSignet => "Bitcoin signet (test)",
+            Net::Tron => "TRON (REAL MONEY)",
+            Net::Eth => "Ethereum (REAL MONEY)",
         }
     }
     pub fn parse(code: &str) -> Result<Self, PolicyError> {
@@ -93,7 +106,7 @@ impl Net {
             .map_or_else(|| invalid(format!("unknown network {code:?}")), Ok)
     }
     pub fn is_test(self) -> bool {
-        true
+        matches!(self, Net::TronNile | Net::EthSepolia | Net::BtcSignet)
     }
     pub fn wait_ms(self) -> u64 {
         if self.is_test() {
@@ -106,11 +119,11 @@ impl Net {
     pub fn canonical(self, address: &str) -> Result<String, PolicyError> {
         let a = address.trim();
         match self {
-            Net::TronNile => a
+            Net::TronNile | Net::Tron => a
                 .parse::<TronAddress>()
                 .map(|t| t.to_base58())
                 .map_err(|_| PolicyError::Invalid("that isn't a valid TRON address".into())),
-            Net::EthSepolia => a
+            Net::EthSepolia | Net::Eth => a
                 .parse::<EthAddress>()
                 .map(|e| e.to_checksum())
                 .map_err(|_| {
@@ -138,14 +151,21 @@ pub enum Asset {
     TrxNile,
     UsdtEthSepolia,
     BtcSignet,
+    /// Real networks (real-networks builds only).
+    UsdtTron,
+    Trx,
+    UsdtEth,
 }
 
 impl Asset {
-    pub const ALL: [Asset; 4] = [
+    pub const ALL: [Asset; 7] = [
         Asset::UsdtTronNile,
         Asset::TrxNile,
         Asset::UsdtEthSepolia,
         Asset::BtcSignet,
+        Asset::UsdtTron,
+        Asset::Trx,
+        Asset::UsdtEth,
     ];
     pub fn code(self) -> &'static str {
         match self {
@@ -153,6 +173,9 @@ impl Asset {
             Asset::TrxNile => "trx-nile",
             Asset::UsdtEthSepolia => "usdt-eth-sepolia",
             Asset::BtcSignet => "btc-signet",
+            Asset::UsdtTron => "usdt-tron",
+            Asset::Trx => "trx",
+            Asset::UsdtEth => "usdt-eth",
         }
     }
     pub fn name(self) -> &'static str {
@@ -161,12 +184,17 @@ impl Asset {
             Asset::TrxNile => "Test TRX on TRON Nile",
             Asset::UsdtEthSepolia => "Test USDT on Ethereum Sepolia",
             Asset::BtcSignet => "Test bitcoin (signet)",
+            Asset::UsdtTron => "USDT on TRON (REAL)",
+            Asset::Trx => "TRX (REAL)",
+            Asset::UsdtEth => "USDT on Ethereum (REAL)",
         }
     }
     pub fn unit(self) -> &'static str {
         match self {
-            Asset::UsdtTronNile | Asset::UsdtEthSepolia => "USDT",
-            Asset::TrxNile => "TRX",
+            Asset::UsdtTronNile | Asset::UsdtEthSepolia | Asset::UsdtTron | Asset::UsdtEth => {
+                "USDT"
+            }
+            Asset::TrxNile | Asset::Trx => "TRX",
             Asset::BtcSignet => "BTC",
         }
     }
@@ -181,6 +209,8 @@ impl Asset {
             Asset::UsdtTronNile | Asset::TrxNile => Net::TronNile,
             Asset::UsdtEthSepolia => Net::EthSepolia,
             Asset::BtcSignet => Net::BtcSignet,
+            Asset::UsdtTron | Asset::Trx => Net::Tron,
+            Asset::UsdtEth => Net::Eth,
         }
     }
     pub fn decimals(self) -> u32 {
@@ -195,6 +225,8 @@ impl Asset {
             // 1000 test USDT / TRX; 0.01 test BTC.
             Asset::UsdtTronNile | Asset::TrxNile | Asset::UsdtEthSepolia => 1_000_000_000,
             Asset::BtcSignet => 1_000_000,
+            // Real money starts small: 50 USDT / 50 TRX a day. Raising waits 24 h.
+            Asset::UsdtTron | Asset::Trx | Asset::UsdtEth => 50_000_000,
         }
     }
     /// Base units as decimal text ("12.5").

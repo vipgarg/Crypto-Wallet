@@ -12,6 +12,8 @@ data class WalletEntry(
     val tier: String,
     val usesPassphrase: Boolean,
     val public: WalletPublicRecord,
+    /** Made by a real-networks build: signs real money only (sealed in its vault too). */
+    val real: Boolean = BuildConfig.REAL_NETWORKS,
 ) {
     val tierName: String
         get() = when (tier) {
@@ -53,6 +55,7 @@ class WalletStore(filesDir: File) {
             .put("btc_zpub", entry.public.btcZpub)
             .put("eth", entry.public.eth)
             .put("tron", entry.public.tron)
+            .put("real", entry.real)
         atomicWrite(File(dir, "${entry.id}.json"), json.toString(2).toByteArray())
     }
 
@@ -81,6 +84,7 @@ class WalletStore(filesDir: File) {
             eth = o.getString("eth"),
             tron = o.getString("tron"),
         ),
+        real = o.optBoolean("real", false),
     )
 
     /** Write a temp file, then rename, so a crash can't leave half a file. */

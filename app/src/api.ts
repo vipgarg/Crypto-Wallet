@@ -241,6 +241,8 @@ export interface EthSent {
 
 export interface Settings {
   bitcoin_enabled: boolean;
+  /** Real-network sending (real money); off until switched on after the release gates. */
+  real_sending: boolean;
 }
 
 export interface NewWalletInput {
@@ -422,14 +424,16 @@ export const api = {
   getAuditLog: () => call<AuditView>("get_audit_log"),
   getSettings: () => call<Settings>("get_settings"),
   getNileBalances: (id: string) => call<NileBalances>("get_nile_balances", { id }),
-  prepareTronTestSend: (id: string, recipient: string, amount: string, kind: "usdt" | "trx") =>
-    call<PreparedTron>("prepare_tron_test_send", { id, recipient, amount, kind }),
+  prepareTronTestSend: (id: string, recipient: string, amount: string, kind: "usdt" | "trx", real: boolean) =>
+    call<PreparedTron>("prepare_tron_test_send", { id, recipient, amount, kind, real }),
   finishTronTestSend: (signedQr: string) => call<TronSent>("finish_tron_test_send", { signedQr }),
   getSepoliaBalances: (id: string) => call<SepoliaBalances>("get_sepolia_balances", { id }),
-  prepareEthTestSend: (id: string, recipient: string, amount: string) =>
-    call<PreparedEth>("prepare_eth_test_send", { id, recipient, amount }),
+  prepareEthTestSend: (id: string, recipient: string, amount: string, real: boolean) =>
+    call<PreparedEth>("prepare_eth_test_send", { id, recipient, amount, real }),
   finishEthTestSend: (signedQr: string) => call<EthSent>("finish_eth_test_send", { signedQr }),
   setBitcoinEnabled: (enabled: boolean) => call<Settings>("set_bitcoin_enabled", { enabled }),
+  setRealSending: (enabled: boolean, confirmation: string) =>
+    call<Settings>("set_real_sending", { enabled, confirmation }),
   getAddressBook: () => call<AddressBookView>("get_address_book"),
   addAddressBookEntry: (entry: NewBookEntry) => call<AddressBookView>("add_address_book_entry", { entry }),
   removeAddressBookEntry: (id: string) => call<AddressBookView>("remove_address_book_entry", { id }),

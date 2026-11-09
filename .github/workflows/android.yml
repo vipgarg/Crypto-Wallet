@@ -13,6 +13,11 @@ on:
       - "Cargo.lock"
       - ".github/workflows/android.yml"
   workflow_dispatch:
+    inputs:
+      real_networks:
+        description: "REAL-NETWORK build (signs real money). Only after the release gates in docs/release-gate.md."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,6 +28,8 @@ jobs:
     env:
       CARGO_NDK_VERSION: "4.1.2"
       GRADLE_VERSION: "8.14.3"
+      # True only for a manual run with the box ticked; pushes always build test.
+      REAL: ${{ github.event_name == 'workflow_dispatch' && inputs.real_networks == true }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,6 +39,15 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Real-network build preconditions
+        if: env.REAL == 'true'
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNER_KEYSTORE_B64 }}
+        run: |
+          echo "::warning::REAL-NETWORK build requested: this APK signs real money."
+          test -n "$KEYSTORE_B64" || { echo "::error::A real-network build must be signed with the owner's key (SIGNER_* secrets)"; exit 1; }
+          test -f android/signing-cert.sha256 || { echo "::error::A real-network build needs android/signing-cert.sha256 (the pinned signing certificate)"; exit 1; }
 
       - name: Rust toolchain (pinned by rust-toolchain.toml) + Android target
         run: |
@@ -46,7 +62,7 @@ jobs:
         run: |
           echo "NDK: $ANDROID_NDK_ROOT"
           cargo ndk -t arm64-v8a --platform 29 -o android/app/src/main/jniLibs \
-            build -p signer-ffi --release --locked
+            build -p signer-ffi --release --locked $([ "$REAL" = "true" ] && echo "--features real-networks")
           ls -l android/app/src/main/jniLibs/arm64-v8a/
 
       - name: Kotlin bindings (UniFFI)
@@ -75,7 +91,7 @@ jobs:
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           BT="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)"
           if [ -n "$KEYSTORE_B64" ]; then
-            gradle assembleRelease --no-daemon --stacktrace
+            gradle assembleRelease --no-daemon --stacktrace -PrealNetworks="$REAL"
             KS="$RUNNER_TEMP/signer.jks"
             echo "$KEYSTORE_B64" | base64 -d > "$KS"
             "$BT/zipalign" -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
@@ -124,7 +140,7 @@ jobs:
       - name: Name and hash the APK
         run: |
           mkdir -p out
-          NAME="wallet-signer-testnet-${GITHUB_SHA::7}.apk"
+          if [ "$REAL" = "true" ]; then NAME="wallet-signer-REAL-${GITHUB_SHA::7}.apk"; else NAME="wallet-signer-testnet-${GITHUB_SHA::7}.apk"; fi
           cp "$APK" "out/$NAME"
           echo "Build: $APK_KIND"
           if [ -n "${CERT_FILE:-}" ]; then cp "$CERT_FILE" "out/signing-cert.txt"; cat out/signing-cert.txt; fi
@@ -132,6 +148,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wallet-signer-testnet-${{ github.sha }}
+          name: wallet-signer-${{ env.REAL == 'true' && 'REAL' || 'testnet' }}-${{ github.sha }}
           path: out/
           if-no-files-found: error

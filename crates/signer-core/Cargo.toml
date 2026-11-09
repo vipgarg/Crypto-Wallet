@@ -27,5 +27,10 @@ secp256k1 = { version = "0.29", default-features = false, features = ["std", "re
 zeroize = "1"
 getrandom = "0.2"
 
+[features]
+# Real-network signing (TRON and Ethereum mainnet). Off in every normal
+# build; CI turns it on only when asked and only with the signing key pinned.
+real-networks = []
+
 [lints]
 workspace = true

@@ -1032,6 +1032,7 @@ pub async fn finish_test_send(
 
 /// A TRON test payment built here, waiting for the tablet's signature.
 pub struct PendingTron {
+    real: bool,
     wallet_id: String,
     owner: chain_tron::TronAddress,
     raw: Vec<u8>,
@@ -1093,7 +1094,9 @@ pub async fn prepare_tron_test_send(
     recipient: String,
     amount: String,
     kind: String,
+    real: bool,
 ) -> Result<PreparedTron, String> {
+    let config = send_config(&state, real)?;
     let (wallet_id, owner) = wallet_tron(&state, &id)?;
     let to: chain_tron::TronAddress = recipient
         .trim()
@@ -1103,6 +1106,9 @@ pub async fn prepare_tron_test_send(
         return Err("The recipient is this wallet itself.".into());
     }
     let amount_units = tron_test::parse_usdt(&amount)?;
+    if real && kind == "usdt" {
+        require_book_entry(&state, Network::Tron, &to.to_base58()).await?;
+    }
     let trx = match kind.as_str() {
         "usdt" => false,
         "trx" => {
@@ -1120,7 +1126,7 @@ pub async fn prepare_tron_test_send(
     };
     tokio::time::timeout(
         Duration::from_secs(30),
-        tron_test::require_ready_sender(&state.http, &state.config, &owner),
+        tron_test::require_ready_sender(&state.http, &config, &owner),
     )
     .await
     .map_err(|_| "The Nile node didn't answer in time.".to_owned())??;
@@ -1128,7 +1134,7 @@ pub async fn prepare_tron_test_send(
         tron_tx::TronTx::Trx(
             tokio::time::timeout(
                 Duration::from_secs(30),
-                tron_test::build_trx(&state.http, &state.config, owner, to, amount_units),
+                tron_test::build_trx(&state.http, &config, owner, to, amount_units),
             )
             .await
             .map_err(|_| "The Nile node didn't answer in time.".to_owned())??,
@@ -1137,7 +1143,7 @@ pub async fn prepare_tron_test_send(
         tron_tx::TronTx::Usdt(
             tokio::time::timeout(
                 Duration::from_secs(30),
-                tron_test::build(&state.http, &state.config, owner, to, amount_units),
+                tron_test::build(&state.http, &config, owner, to, amount_units),
             )
             .await
             .map_err(|_| "The Nile node didn't answer in time.".to_owned())??,
@@ -1146,7 +1152,7 @@ pub async fn prepare_tron_test_send(
     let raw = tx.encode_raw();
     let fee_estimate = match tokio::time::timeout(
         Duration::from_secs(20),
-        tron_test::estimate_fee(&state.http, &state.config, &tx, raw.len()),
+        tron_test::estimate_fee(&state.http, &config, &tx, raw.len()),
     )
     .await
     {
@@ -1159,6 +1165,7 @@ pub async fn prepare_tron_test_send(
     let qr = crate::qr::matrix_large(&qr_text)?;
     let txid = hex::encode(tron_tx::txid(&raw));
     *state.pending_tron.lock().map_err(|_| LOCK_ERR.to_owned())? = Some(PendingTron {
+        real,
         wallet_id,
         owner,
         raw,
@@ -1193,16 +1200,17 @@ pub async fn finish_tron_test_send(
         .map_err(|_| {
             "That isn't a TRON signature from the tablet (or it was scanned wrongly).".to_owned()
         })?;
-    let (raw, owner, wallet_id) = {
+    let (raw, owner, wallet_id, real) = {
         let p = state.pending_tron.lock().map_err(|_| LOCK_ERR.to_owned())?;
         let p = p.as_ref().ok_or_else(|| {
             "No TRON payment is waiting for a signature. Build it again.".to_owned()
         })?;
-        (p.raw.clone(), p.owner, p.wallet_id.clone())
+        (p.raw.clone(), p.owner, p.wallet_id.clone(), p.real)
     };
+    let config = send_config(&state, real)?;
     let (signed, receipt) = tron_test::finalize(&raw, &owner, &answer)?;
     let txid = tron_tx::txid(&raw);
-    let mut sent = tron_test::broadcast(&state.http, &state.config, &signed, &txid).await?;
+    let mut sent = tron_test::broadcast(&state.http, &config, &signed, &txid).await?;
     *state.pending_tron.lock().map_err(|_| LOCK_ERR.to_owned())? = None;
     let log = match receipt {
         Some(r) => {
@@ -1220,9 +1228,14 @@ pub async fn finish_tron_test_send(
         None => String::new(),
     };
     state.session.audit().record(
-        Event::TestPaymentSent,
+        if real {
+            Event::RealPaymentSent
+        } else {
+            Event::TestPaymentSent
+        },
         &format!(
-            "{wallet_id} (TRON Nile), transaction {}{log}",
+            "{wallet_id} ({}), transaction {}{log}",
+            if real { "TRON, REAL" } else { "TRON Nile" },
             sent.txid.chars().take(8).collect::<String>()
         ),
     );
@@ -1234,6 +1247,7 @@ pub async fn finish_tron_test_send(
 // ---------------------------------------------------------------------------
 
 pub struct PendingEth {
+    real: bool,
     wallet_id: String,
     owner: chain_eth::EthAddress,
     tx: eth_tx::Erc20Transfer,
@@ -1292,7 +1306,9 @@ pub async fn prepare_eth_test_send(
     id: String,
     recipient: String,
     amount: String,
+    real: bool,
 ) -> Result<PreparedEth, String> {
+    let config = send_config(&state, real)?;
     let (wallet_id, owner) = wallet_eth(&state, &id)?;
     let to: chain_eth::EthAddress = recipient
         .trim()
@@ -1302,9 +1318,12 @@ pub async fn prepare_eth_test_send(
         return Err("The recipient is this wallet itself.".into());
     }
     let amount_units = tron_test::parse_usdt(&amount)?;
+    if real {
+        require_book_entry(&state, Network::Ethereum, &to.to_checksum()).await?;
+    }
     let b = tokio::time::timeout(
         Duration::from_secs(45),
-        eth_test::build(&state.http, &state.config, owner, to, amount_units),
+        eth_test::build(&state.http, &config, owner, to, amount_units),
     )
     .await
     .map_err(|_| "The Sepolia nodes didn't answer in time.".to_owned())??;
@@ -1315,6 +1334,7 @@ pub async fn prepare_eth_test_send(
     let request_id = hex::encode(eth_tx::signing_hash(&unsigned));
     let nonce = b.tx.nonce;
     *state.pending_eth.lock().map_err(|_| LOCK_ERR.to_owned())? = Some(PendingEth {
+        real,
         wallet_id,
         owner,
         tx: b.tx,
@@ -1345,17 +1365,18 @@ pub async fn finish_eth_test_send(
             "That isn't an Ethereum signature from the tablet (or it was scanned wrongly)."
                 .to_owned()
         })?;
-    let (tx, owner, wallet_id) = {
+    let (tx, owner, wallet_id, real) = {
         let p = state.pending_eth.lock().map_err(|_| LOCK_ERR.to_owned())?;
         let p = p.as_ref().ok_or_else(|| {
             "No Ethereum payment is waiting for a signature. Build it again.".to_owned()
         })?;
-        (p.tx.clone(), p.owner, p.wallet_id.clone())
+        (p.tx.clone(), p.owner, p.wallet_id.clone(), p.real)
     };
+    let config = send_config(&state, real)?;
     let (signed, r) = eth_test::finalize(&tx, &owner, &answer)?;
     let mut sent = tokio::time::timeout(
         Duration::from_secs(45),
-        eth_test::broadcast(&state.http, &state.config, &signed),
+        eth_test::broadcast(&state.http, &config, &signed),
     )
     .await
     .map_err(|_| "The Sepolia nodes didn't answer in time.".to_owned())??;
@@ -1370,9 +1391,18 @@ pub async fn finish_eth_test_send(
     )?;
     sent.log_note = tron_test::receipt_note(previous.map(|p| p.seq), r.seq);
     state.session.audit().record(
-        Event::TestPaymentSent,
+        if real {
+            Event::RealPaymentSent
+        } else {
+            Event::TestPaymentSent
+        },
         &format!(
-            "{wallet_id} (Ethereum Sepolia), transaction {}, tablet log #{} head {}",
+            "{wallet_id} ({}), transaction {}, tablet log #{} head {}",
+            if real {
+                "Ethereum, REAL"
+            } else {
+                "Ethereum Sepolia"
+            },
             sent.txid.chars().take(10).collect::<String>(),
             r.seq,
             &head[..8]
@@ -1411,6 +1441,87 @@ fn registry_for_use(state: &AppState) -> Result<Registry, String> {
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     state.session.settings()
+}
+
+/// Words to type to switch on real-network sending.
+pub const REAL_SENDING_CONFIRMATION: &str = "I HAVE PASSED THE RELEASE GATES";
+
+/// Switch real-network sending (real money) on or off. Switching on needs
+/// the confirmation typed exactly; switching off doesn't.
+#[tauri::command]
+pub fn set_real_sending(
+    state: State<'_, AppState>,
+    enabled: bool,
+    confirmation: String,
+) -> Result<Settings, String> {
+    if enabled && confirmation.trim() != REAL_SENDING_CONFIRMATION {
+        return Err(format!(
+            "To switch on real sending, type exactly: {REAL_SENDING_CONFIRMATION}"
+        ));
+    }
+    let before = state.session.settings()?.real_sending;
+    let s = state
+        .session
+        .update_settings(|s| s.real_sending = enabled)?;
+    if before != enabled {
+        if !enabled {
+            if let Ok(mut p) = state.pending_tron.lock() {
+                *p = None;
+            }
+            if let Ok(mut p) = state.pending_eth.lock() {
+                *p = None;
+            }
+        }
+        state.session.audit().record(
+            Event::SettingsChanged,
+            if enabled {
+                "Real-network sending switched ON"
+            } else {
+                "Real-network sending switched off"
+            },
+        );
+    }
+    Ok(s)
+}
+
+/// Real money goes only to an address-book entry whose waiting period is
+/// over by network time (the tablet's own allowlist is checked as well).
+async fn require_book_entry(
+    state: &AppState,
+    network: Network,
+    address: &str,
+) -> Result<(), String> {
+    let now = current_network_time(state).await;
+    state.session.with_book(false, |_, b| {
+        let e = b
+            .entries
+            .iter()
+            .find(|e| e.network == network && e.address == address)
+            .ok_or_else(|| {
+                "For real money, the recipient must be in the address book (and its 24-hour wait over).".to_owned()
+            })?;
+        match usable(e, now) {
+            Usable::Yes => Ok(()),
+            _ => Err(format!(
+                "\"{}\" was added to the address book recently (or network time couldn't be confirmed); it can't be paid yet.",
+                e.label
+            )),
+        }
+    })
+}
+
+/// The configuration a send uses: test networks, or (only when switched on
+/// in Settings) the real ones.
+fn send_config(state: &AppState, real: bool) -> Result<NetworkConfig, String> {
+    if !real {
+        return Ok(state.config.clone());
+    }
+    if !state.session.settings()?.real_sending {
+        return Err(
+            "Real sending is off. It's switched on in Settings after the release gates.".into(),
+        );
+    }
+    Ok(crate::real_send::real_view(&state.config))
 }
 
 /// Pause or resume Bitcoin everywhere in this app.
@@ -1867,7 +1978,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            35,
+            36,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");
