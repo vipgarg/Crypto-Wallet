@@ -114,6 +114,40 @@ pub async fn balances<H: HttpClient>(
     })
 }
 
+/// The sender must be an activated TRON account with some TRX: an address
+/// that has only ever received tokens (no TRX) doesn't exist on-chain yet,
+/// and sending USDT costs TRX (energy/bandwidth). Checked before building,
+/// so the problem is explained before anything is signed.
+pub async fn require_ready_sender<H: HttpClient>(
+    http: &H,
+    config: &NetworkConfig,
+    owner: &TronAddress,
+) -> Result<(), String> {
+    let p = first_provider(config)?;
+    let acct = http
+        .post_json(
+            &format!("{}{}", p.base_url, api::GET_ACCOUNT_PATH),
+            &api::get_account(owner),
+        )
+        .await
+        .map_err(|e| format!("{}: couldn't read the sending account: {e}", p.id))?;
+    if acct.as_object().is_some_and(|o| o.is_empty()) {
+        return Err(format!(
+            "This TRON address isn't activated yet: on TRON an address only becomes an account when it first receives TRX (receiving only USDT doesn't activate it), and sending USDT also needs TRX for the network fee. Send some test TRX to {} (Nile faucet), then try again.",
+            owner.to_base58()
+        ));
+    }
+    let trx = api::parse_trx_balance(&acct).map_err(|e| format!("{}: {e}", p.id))?;
+    if trx == 0 {
+        return Err(format!(
+            "This address has no TRX. Sending USDT on TRON uses TRX for the network fee (up to {} TRX). Send some test TRX to {} first.",
+            FEE_LIMIT_SUN / 1_000_000,
+            owner.to_base58()
+        ));
+    }
+    Ok(())
+}
+
 /// Latest solidified block: (number, block id, timestamp ms).
 pub fn parse_block(v: &Value) -> Result<(u64, [u8; 32], u64), String> {
     let bad = || "The node's block answer is malformed.".to_owned();
@@ -254,6 +288,39 @@ mod tests {
         assert!(parse_usdt("-1").is_err());
         assert!(parse_usdt("1e3").is_err());
         assert_eq!(decimal6(12_500_000), "12.5");
+    }
+
+    #[tokio::test]
+    async fn inactive_or_empty_sender_is_explained_before_signing() {
+        let config = NetworkConfig::embedded().expect("config");
+        let base = &config.nile_providers[0].base_url;
+        let owner: TronAddress = "TXJ7MoQLNCGstqko8jQHEjXwAhhwYLh5aC".parse().expect("a");
+        let url = format!("{base}{}", api::GET_ACCOUNT_PATH);
+        let mut http = MockHttp::default();
+        http.on_post(&url, &api::get_account(&owner), json!({}));
+        let e = require_ready_sender(&http, &config, &owner)
+            .await
+            .expect_err("inactive");
+        assert!(e.contains("isn't activated"), "{e}");
+
+        let mut http = MockHttp::default();
+        http.on_post(
+            &url,
+            &api::get_account(&owner),
+            json!({"address": "41", "create_time": 1}),
+        );
+        let e = require_ready_sender(&http, &config, &owner)
+            .await
+            .expect_err("no trx");
+        assert!(e.contains("no TRX"), "{e}");
+
+        let mut http = MockHttp::default();
+        http.on_post(
+            &url,
+            &api::get_account(&owner),
+            json!({"address": "41", "balance": 50_000_000}),
+        );
+        assert!(require_ready_sender(&http, &config, &owner).await.is_ok());
     }
 
     #[tokio::test]

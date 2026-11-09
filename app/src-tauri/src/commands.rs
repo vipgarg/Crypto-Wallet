@@ -1093,6 +1093,12 @@ pub async fn prepare_tron_test_send(
         return Err("The recipient is this wallet itself.".into());
     }
     let amount_units = tron_test::parse_usdt(&amount)?;
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        tron_test::require_ready_sender(&state.http, &state.config, &owner),
+    )
+    .await
+    .map_err(|_| "The Nile node didn't answer in time.".to_owned())??;
     let t = tokio::time::timeout(
         Duration::from_secs(30),
         tron_test::build(&state.http, &state.config, owner, to, amount_units),
