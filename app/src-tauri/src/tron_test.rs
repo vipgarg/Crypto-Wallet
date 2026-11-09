@@ -11,12 +11,14 @@ use chain_tron::{api, TronAddress};
 use data_sources::{HttpClient, NetworkConfig};
 use serde::Serialize;
 use serde_json::{json, Value};
-use tron_tx::Trc20Transfer;
+use tron_tx::{Trc20Transfer, TronTx, TrxTransfer};
 
 /// Fee limit put on test transfers (the tablet accepts up to 30 TRX).
 pub const FEE_LIMIT_SUN: u64 = 30_000_000;
 /// How long a built transaction stays valid (the tablet accepts up to 10 min).
 pub const VALIDITY_MS: u64 = 9 * 60 * 1000;
+/// Largest TRX top-up between own wallets (the tablet refuses more).
+pub const MAX_TRX_TOPUP_SUN: u128 = 200_000_000;
 
 fn first_provider(config: &NetworkConfig) -> Result<&data_sources::config::SignetProvider, String> {
     config
@@ -175,14 +177,11 @@ pub fn parse_block(v: &Value) -> Result<(u64, [u8; 32], u64), String> {
     Ok((number, id, ts))
 }
 
-/// Build the unsigned transfer from a recent solidified block.
-pub async fn build<H: HttpClient>(
+/// Reference block and time from the latest solidified block.
+async fn recent_block<H: HttpClient>(
     http: &H,
     config: &NetworkConfig,
-    owner: TronAddress,
-    recipient: TronAddress,
-    amount: u128,
-) -> Result<Trc20Transfer, String> {
+) -> Result<([u8; 2], [u8; 8], u64), String> {
     let p = first_provider(config)?;
     let block = http
         .post_json(
@@ -192,7 +191,19 @@ pub async fn build<H: HttpClient>(
         .await
         .map_err(|e| format!("{}: couldn't read the latest block: {e}", p.id))?;
     let (number, id, ts) = parse_block(&block)?;
-    let (ref_block_bytes, ref_block_hash) = tron_tx::ref_block(number, &id);
+    let (rbb, rbh) = tron_tx::ref_block(number, &id);
+    Ok((rbb, rbh, ts))
+}
+
+/// Build the unsigned USDT transfer from a recent solidified block.
+pub async fn build<H: HttpClient>(
+    http: &H,
+    config: &NetworkConfig,
+    owner: TronAddress,
+    recipient: TronAddress,
+    amount: u128,
+) -> Result<Trc20Transfer, String> {
+    let (ref_block_bytes, ref_block_hash, ts) = recent_block(http, config).await?;
     Ok(Trc20Transfer {
         ref_block_bytes,
         ref_block_hash,
@@ -204,6 +215,91 @@ pub async fn build<H: HttpClient>(
         recipient,
         amount,
     })
+}
+
+/// Build an unsigned plain TRX top-up (to one of your own wallets).
+pub async fn build_trx<H: HttpClient>(
+    http: &H,
+    config: &NetworkConfig,
+    owner: TronAddress,
+    recipient: TronAddress,
+    amount_sun: u128,
+) -> Result<TrxTransfer, String> {
+    if amount_sun > MAX_TRX_TOPUP_SUN {
+        return Err(format!(
+            "A TRX top-up is limited to {} TRX.",
+            MAX_TRX_TOPUP_SUN / 1_000_000
+        ));
+    }
+    let amount_sun = u64::try_from(amount_sun).map_err(|_| "Amount too large.".to_owned())?;
+    let (ref_block_bytes, ref_block_hash, ts) = recent_block(http, config).await?;
+    Ok(TrxTransfer {
+        ref_block_bytes,
+        ref_block_hash,
+        expiration_ms: ts + VALIDITY_MS,
+        timestamp_ms: ts,
+        owner,
+        recipient,
+        amount_sun,
+    })
+}
+
+/// Rough network cost of a transaction, for display only (nothing signed
+/// depends on it): energy from a dry-run (USDT only) and the account's own
+/// energy and bandwidth, priced with the chain's current parameters.
+pub async fn estimate_fee<H: HttpClient>(
+    http: &H,
+    config: &NetworkConfig,
+    tx: &TronTx,
+    raw_len: usize,
+) -> Result<String, String> {
+    let p = first_provider(config)?;
+    let url = |path: &str| format!("{}{path}", p.base_url);
+    let owner = tx.owner();
+    let energy_needed = match tx {
+        TronTx::Usdt(t) => {
+            let r = http
+                .post_json(
+                    &url(api::TRIGGER_CONSTANT_PATH),
+                    &api::trc20_transfer_estimate(&t.token, &owner, &t.recipient, t.amount),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            api::parse_energy_used(&r).map_err(|e| e.to_string())?
+        }
+        TronTx::Trx(_) => 0,
+    };
+    let res = http
+        .post_json(
+            &url(api::GET_ACCOUNT_RESOURCE_PATH),
+            &json!({"address": owner.to_hex()}),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let have = api::parse_resources(&res);
+    let params = http
+        .post_json(&url(api::CHAIN_PARAMETERS_PATH), &json!({}))
+        .await
+        .map_err(|e| e.to_string())?;
+    let energy_price = api::chain_parameter(&params, "getEnergyFee").unwrap_or(100);
+    let bandwidth_price = api::chain_parameter(&params, "getTransactionFee").unwrap_or(1000);
+    // Signed size: raw + signature + framing, plus TRON's 64-byte result allowance.
+    let bytes = raw_len as u64 + 65 + 6 + 64;
+    let burn = api::fee_burn_sun(energy_needed, energy_price, bytes, bandwidth_price, have);
+    let energy = if energy_needed > 0 {
+        format!("energy {energy_needed} needed, {} available", have.energy)
+    } else {
+        "no energy needed".to_owned()
+    };
+    let bandwidth = if have.bandwidth >= bytes {
+        "bandwidth covered by the free daily allowance"
+    } else {
+        "bandwidth paid in TRX"
+    };
+    Ok(format!(
+        "about {} TRX ({energy}; {bandwidth})",
+        decimal6(u128::from(burn))
+    ))
 }
 
 /// The tablet's signing-log receipt sent with a signature: the
@@ -329,6 +425,56 @@ mod tests {
             c.usdt_trc20_nile.map(|a| a.to_base58()).as_deref(),
             Some(tron_tx::NILE_USDT)
         );
+    }
+
+    #[tokio::test]
+    async fn fee_estimate_for_usdt_and_trx() {
+        let config = NetworkConfig::embedded().expect("config");
+        let base = &config.nile_providers[0].base_url;
+        let owner: TronAddress = "TXJ7MoQLNCGstqko8jQHEjXwAhhwYLh5aC".parse().expect("a");
+        let to: TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("b");
+        let usdt = nile_usdt(&config).expect("usdt");
+        let mut http = MockHttp::default();
+        http.on_post(
+            &format!("{base}{}", api::TRIGGER_CONSTANT_PATH),
+            &api::trc20_transfer_estimate(&usdt, &owner, &to, 5_000_000),
+            json!({"result": {"result": true}, "energy_used": 64_285}),
+        );
+        http.on_post(
+            &format!("{base}{}", api::GET_ACCOUNT_RESOURCE_PATH),
+            &json!({"address": owner.to_hex()}),
+            json!({"freeNetLimit": 600, "freeNetUsed": 0}),
+        );
+        http.on_post(
+            &format!("{base}{}", api::CHAIN_PARAMETERS_PATH),
+            &json!({}),
+            json!({"chainParameter": [{"key": "getEnergyFee", "value": 100}, {"key": "getTransactionFee", "value": 1000}]}),
+        );
+        let t = TronTx::Usdt(Trc20Transfer {
+            ref_block_bytes: [0, 1],
+            ref_block_hash: [0; 8],
+            expiration_ms: 2,
+            timestamp_ms: 1,
+            fee_limit_sun: FEE_LIMIT_SUN,
+            owner,
+            token: usdt,
+            recipient: to,
+            amount: 5_000_000,
+        });
+        let e = estimate_fee(&http, &config, &t, 200).await.expect("usdt");
+        assert!(e.starts_with("about 6.4285 TRX"), "{e}");
+        assert!(e.contains("bandwidth covered"), "{e}");
+        let t = TronTx::Trx(TrxTransfer {
+            ref_block_bytes: [0, 1],
+            ref_block_hash: [0; 8],
+            expiration_ms: 2,
+            timestamp_ms: 1,
+            owner,
+            recipient: to,
+            amount_sun: 1,
+        });
+        let e = estimate_fee(&http, &config, &t, 150).await.expect("trx");
+        assert!(e.starts_with("about 0 TRX (no energy needed"), "{e}");
     }
 
     #[test]

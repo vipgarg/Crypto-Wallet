@@ -293,6 +293,97 @@ pub mod api {
         }
         u128::from_str_radix(low, 16).map_err(|_| ApiError::Malformed)
     }
+
+    pub const GET_ACCOUNT_RESOURCE_PATH: &str = "/wallet/getaccountresource";
+    pub const CHAIN_PARAMETERS_PATH: &str = "/wallet/getchainparameters";
+
+    /// Dry-run of a TRC-20 `transfer` (for the energy estimate only; the
+    /// transaction that gets signed is always built locally).
+    pub fn trc20_transfer_estimate(
+        token: &TronAddress,
+        owner: &TronAddress,
+        to: &TronAddress,
+        amount: u128,
+    ) -> Value {
+        let mut param = String::with_capacity(128);
+        param.push_str(&"0".repeat(24));
+        param.push_str(&hex::encode(to.hash20()));
+        param.push_str(&format!("{amount:064x}"));
+        json!({
+            "owner_address": owner.to_hex(),
+            "contract_address": token.to_hex(),
+            "function_selector": "transfer(address,uint256)",
+            "parameter": param,
+        })
+    }
+
+    /// Energy a dry-run used (`energy_used`, plus any `energy_penalty`).
+    pub fn parse_energy_used(resp: &Value) -> Result<u64, ApiError> {
+        let ok = resp
+            .get("result")
+            .and_then(|r| r.get("result"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !ok {
+            return Err(ApiError::Node("dry-run failed".into()));
+        }
+        let used = resp
+            .get("energy_used")
+            .and_then(Value::as_u64)
+            .ok_or(ApiError::Malformed)?;
+        let penalty = resp
+            .get("energy_penalty")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        Ok(used.saturating_add(penalty))
+    }
+
+    /// Energy and bandwidth an account can use without burning TRX.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Resources {
+        pub energy: u64,
+        pub bandwidth: u64,
+    }
+
+    /// From `/wallet/getaccountresource` (absent fields are 0).
+    pub fn parse_resources(resp: &Value) -> Resources {
+        let n = |k: &str| resp.get(k).and_then(Value::as_u64).unwrap_or(0);
+        Resources {
+            energy: n("EnergyLimit").saturating_sub(n("EnergyUsed")),
+            bandwidth: n("freeNetLimit").saturating_sub(n("freeNetUsed"))
+                + n("NetLimit").saturating_sub(n("NetUsed")),
+        }
+    }
+
+    /// One value from `/wallet/getchainparameters`, e.g. `getEnergyFee`.
+    pub fn chain_parameter(resp: &Value, key: &str) -> Option<u64> {
+        resp.get("chainParameter")?
+            .as_array()?
+            .iter()
+            .find(|p| p.get("key").and_then(Value::as_str) == Some(key))
+            .and_then(|p| p.get("value").and_then(Value::as_u64))
+    }
+
+    /// TRX (in sun) a transaction would burn: energy beyond what the
+    /// account has, times the energy price; and, if its bandwidth doesn't
+    /// cover the size, the size times the bandwidth price.
+    pub fn fee_burn_sun(
+        energy_needed: u64,
+        energy_price_sun: u64,
+        tx_bytes: u64,
+        bandwidth_price_sun: u64,
+        have: Resources,
+    ) -> u64 {
+        let energy = energy_needed
+            .saturating_sub(have.energy)
+            .saturating_mul(energy_price_sun);
+        let bandwidth = if have.bandwidth >= tx_bytes {
+            0
+        } else {
+            tx_bytes.saturating_mul(bandwidth_price_sun)
+        };
+        energy.saturating_add(bandwidth)
+    }
 }
 
 /// TRC-20 transfer history from TronGrid's `/v1` indexer API. Everything in
@@ -831,6 +922,62 @@ pub mod history {
                 format!("/v1/accounts/{USDT}/transactions/trc20?limit=50&only_confirmed=true")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod fee_tests {
+    use super::api::*;
+    use serde_json::json;
+
+    #[test]
+    fn fee_estimate_parts() {
+        let r = parse_resources(
+            &json!({"freeNetLimit": 600, "freeNetUsed": 100, "EnergyLimit": 1000, "EnergyUsed": 400}),
+        );
+        assert_eq!(
+            r,
+            Resources {
+                energy: 600,
+                bandwidth: 500
+            }
+        );
+        assert_eq!(
+            parse_resources(&json!({})),
+            Resources {
+                energy: 0,
+                bandwidth: 0
+            }
+        );
+        let p = json!({"chainParameter": [{"key": "getEnergyFee", "value": 100}, {"key": "getTransactionFee", "value": 1000}]});
+        assert_eq!(chain_parameter(&p, "getEnergyFee"), Some(100));
+        assert_eq!(chain_parameter(&p, "nope"), None);
+        assert_eq!(
+            parse_energy_used(
+                &json!({"result": {"result": true}, "energy_used": 64285, "energy_penalty": 10})
+            ),
+            Ok(64295)
+        );
+        assert!(parse_energy_used(&json!({"result": {"result": false}})).is_err());
+        // 64,895 energy at 100 sun with 600 available, bandwidth covered.
+        assert_eq!(
+            fee_burn_sun(64_895, 100, 345, 1000, r),
+            (64_895 - 600) * 100
+        );
+        // No bandwidth left: 345 bytes at 1000 sun.
+        assert_eq!(
+            fee_burn_sun(
+                0,
+                100,
+                345,
+                1000,
+                Resources {
+                    energy: 0,
+                    bandwidth: 10
+                }
+            ),
+            345_000
+        );
     }
 }
 

@@ -16,6 +16,9 @@
 //!   Permission_id = 5.
 //! - `TriggerSmartContract`: owner_address = 1, contract_address = 2,
 //!   call_value = 3, data = 4, call_token_value = 5, token_id = 6.
+//! - `TransferContract` (plain TRX, type 1): owner_address = 1,
+//!   to_address = 2, amount = 3. Used only for top-ups between your own
+//!   wallets (§8.3b); it carries no fee limit.
 //! - `Transaction`: raw_data = 1, signature = 2.
 
 use chain_tron::TronAddress;
@@ -32,6 +35,9 @@ pub const NILE_USDT: &str = "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf";
 /// `TriggerSmartContract` in TRON's `ContractType` enum.
 pub const TRIGGER_SMART_CONTRACT: u64 = 31;
 pub const TRIGGER_TYPE_URL: &str = "type.googleapis.com/protocol.TriggerSmartContract";
+/// `TransferContract` (plain TRX) in TRON's `ContractType` enum.
+pub const TRANSFER_CONTRACT: u64 = 1;
+pub const TRANSFER_TYPE_URL: &str = "type.googleapis.com/protocol.TransferContract";
 /// ERC-20/TRC-20 `transfer(address,uint256)` selector.
 pub const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 
@@ -164,6 +170,220 @@ fn address21(b: &[u8]) -> Result<TronAddress, TxError> {
     Ok(TronAddress::from_hash20(h))
 }
 
+/// A plain TRX transfer (`TransferContract`), as signed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrxTransfer {
+    pub ref_block_bytes: [u8; 2],
+    pub ref_block_hash: [u8; 8],
+    pub expiration_ms: u64,
+    pub timestamp_ms: u64,
+    pub owner: TronAddress,
+    pub recipient: TronAddress,
+    /// In sun (1 TRX = 1,000,000 sun).
+    pub amount_sun: u64,
+}
+
+/// Either kind of transaction this wallet signs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TronTx {
+    Usdt(Trc20Transfer),
+    Trx(TrxTransfer),
+}
+
+impl TronTx {
+    /// Decode either kind strictly.
+    pub fn decode_raw(raw: &[u8]) -> Result<Self, TxError> {
+        let env = decode_envelope(raw)?;
+        match env.ctype {
+            TRIGGER_SMART_CONTRACT => Trc20Transfer::from_envelope(env).map(Self::Usdt),
+            _ => TrxTransfer::from_envelope(env).map(Self::Trx),
+        }
+    }
+    pub fn encode_raw(&self) -> Vec<u8> {
+        match self {
+            Self::Usdt(t) => t.encode_raw(),
+            Self::Trx(t) => t.encode_raw(),
+        }
+    }
+    pub fn owner(&self) -> TronAddress {
+        match self {
+            Self::Usdt(t) => t.owner,
+            Self::Trx(t) => t.owner,
+        }
+    }
+    pub fn recipient(&self) -> TronAddress {
+        match self {
+            Self::Usdt(t) => t.recipient,
+            Self::Trx(t) => t.recipient,
+        }
+    }
+    pub fn times(&self) -> (u64, u64) {
+        match self {
+            Self::Usdt(t) => (t.timestamp_ms, t.expiration_ms),
+            Self::Trx(t) => (t.timestamp_ms, t.expiration_ms),
+        }
+    }
+}
+
+/// The parts shared by both kinds, read strictly.
+struct Envelope<'a> {
+    ref_block_bytes: [u8; 2],
+    ref_block_hash: [u8; 8],
+    expiration_ms: u64,
+    timestamp_ms: u64,
+    fee_limit_sun: Option<u64>,
+    ctype: u64,
+    value: &'a [u8],
+}
+
+fn decode_envelope(raw: &[u8]) -> Result<Envelope<'_>, TxError> {
+    let mut r = Reader::new(raw);
+    let (mut rbb, mut rbh, mut exp, mut ts, mut fee, mut contract) =
+        (None, None, None, None, None, None);
+    while let Some((f, v)) = r.next()? {
+        match f {
+            1 => rbb = Some(bytes(v)?),
+            4 => rbh = Some(bytes(v)?),
+            8 => exp = Some(uint(v)?),
+            11 => {
+                if contract.is_some() {
+                    return refuse("more than one contract call");
+                }
+                contract = Some(bytes(v)?);
+            }
+            14 => ts = Some(uint(v)?),
+            18 => fee = Some(uint(v)?),
+            10 => return refuse("the transaction carries a memo"),
+            _ => return refuse(format!("unexpected transaction field {f}")),
+        }
+    }
+    let ref_block_bytes: [u8; 2] = rbb
+        .and_then(|b| b.try_into().ok())
+        .ok_or(TxError::Malformed)?;
+    let ref_block_hash: [u8; 8] = rbh
+        .and_then(|b| b.try_into().ok())
+        .ok_or(TxError::Malformed)?;
+    let contract = contract.ok_or_else(|| TxError::Refused("no contract call".into()))?;
+
+    // Transaction.Contract
+    let (mut ctype, mut param) = (None, None);
+    let mut r = Reader::new(contract);
+    while let Some((f, v)) = r.next()? {
+        match f {
+            1 => ctype = Some(uint(v)?),
+            2 => param = Some(bytes(v)?),
+            5 => {
+                if uint(v)? != 0 {
+                    return refuse("the transaction uses a non-owner permission");
+                }
+            }
+            _ => return refuse(format!("unexpected contract field {f}")),
+        }
+    }
+    let (ctype, want_url) = match ctype {
+        Some(TRIGGER_SMART_CONTRACT) => (TRIGGER_SMART_CONTRACT, TRIGGER_TYPE_URL),
+        Some(TRANSFER_CONTRACT) => (TRANSFER_CONTRACT, TRANSFER_TYPE_URL),
+        _ => return refuse("only a USDT transfer or a plain TRX transfer can be signed"),
+    };
+    // google.protobuf.Any
+    let (mut url, mut value) = (None, None);
+    let mut r = Reader::new(param.ok_or(TxError::Malformed)?);
+    while let Some((f, v)) = r.next()? {
+        match f {
+            1 => url = Some(bytes(v)?),
+            2 => value = Some(bytes(v)?),
+            _ => return Err(TxError::Malformed),
+        }
+    }
+    if url != Some(want_url.as_bytes()) {
+        return refuse("unexpected contract type");
+    }
+    Ok(Envelope {
+        ref_block_bytes,
+        ref_block_hash,
+        expiration_ms: exp.ok_or(TxError::Malformed)?,
+        timestamp_ms: ts.ok_or(TxError::Malformed)?,
+        fee_limit_sun: fee,
+        ctype,
+        value: value.ok_or(TxError::Malformed)?,
+    })
+}
+
+fn put_header(raw: &mut Vec<u8>, rbb: &[u8; 2], rbh: &[u8; 8], exp: u64) {
+    put_bytes(raw, 1, rbb);
+    put_bytes(raw, 4, rbh);
+    put_uint(raw, 8, exp);
+}
+
+fn contract_bytes(ctype: u64, url: &str, value: &[u8]) -> Vec<u8> {
+    let mut any = Vec::new();
+    put_bytes(&mut any, 1, url.as_bytes());
+    put_bytes(&mut any, 2, value);
+    let mut contract = Vec::new();
+    put_uint(&mut contract, 1, ctype);
+    put_bytes(&mut contract, 2, &any);
+    contract
+}
+
+impl TrxTransfer {
+    pub fn encode_raw(&self) -> Vec<u8> {
+        let mut call = Vec::new();
+        put_bytes(&mut call, 1, &self.owner.to_bytes21());
+        put_bytes(&mut call, 2, &self.recipient.to_bytes21());
+        put_uint(&mut call, 3, self.amount_sun);
+        let mut raw = Vec::new();
+        put_header(
+            &mut raw,
+            &self.ref_block_bytes,
+            &self.ref_block_hash,
+            self.expiration_ms,
+        );
+        put_bytes(
+            &mut raw,
+            11,
+            &contract_bytes(TRANSFER_CONTRACT, TRANSFER_TYPE_URL, &call),
+        );
+        put_uint(&mut raw, 14, self.timestamp_ms);
+        raw
+    }
+
+    pub fn decode_raw(raw: &[u8]) -> Result<Self, TxError> {
+        Self::from_envelope(decode_envelope(raw)?)
+    }
+
+    fn from_envelope(env: Envelope<'_>) -> Result<Self, TxError> {
+        if env.ctype != TRANSFER_CONTRACT {
+            return refuse("this isn't a plain TRX transfer");
+        }
+        if env.fee_limit_sun.is_some() {
+            return refuse("a plain TRX transfer shouldn't carry a fee limit");
+        }
+        let (mut owner, mut to, mut amount) = (None, None, None);
+        let mut r = Reader::new(env.value);
+        while let Some((f, v)) = r.next()? {
+            match f {
+                1 => owner = Some(address21(bytes(v)?)?),
+                2 => to = Some(address21(bytes(v)?)?),
+                3 => amount = Some(uint(v)?),
+                _ => return refuse(format!("unexpected transfer field {f}")),
+            }
+        }
+        let amount_sun = amount.ok_or(TxError::Malformed)?;
+        if amount_sun == 0 || amount_sun > i64::MAX as u64 {
+            return refuse("the TRX amount is zero or invalid");
+        }
+        Ok(Self {
+            ref_block_bytes: env.ref_block_bytes,
+            ref_block_hash: env.ref_block_hash,
+            expiration_ms: env.expiration_ms,
+            timestamp_ms: env.timestamp_ms,
+            owner: owner.ok_or(TxError::Malformed)?,
+            recipient: to.ok_or(TxError::Malformed)?,
+            amount_sun,
+        })
+    }
+}
+
 /// `transfer(recipient, amount)` call data: 4 + 32 + 32 = 68 bytes.
 pub fn transfer_data(recipient: &TronAddress, amount: u128) -> Vec<u8> {
     let mut d = Vec::with_capacity(68);
@@ -197,17 +417,18 @@ impl Trc20Transfer {
         put_bytes(&mut call, 1, &self.owner.to_bytes21());
         put_bytes(&mut call, 2, &self.token.to_bytes21());
         put_bytes(&mut call, 4, &transfer_data(&self.recipient, self.amount));
-        let mut any = Vec::new();
-        put_bytes(&mut any, 1, TRIGGER_TYPE_URL.as_bytes());
-        put_bytes(&mut any, 2, &call);
-        let mut contract = Vec::new();
-        put_uint(&mut contract, 1, TRIGGER_SMART_CONTRACT);
-        put_bytes(&mut contract, 2, &any);
         let mut raw = Vec::new();
-        put_bytes(&mut raw, 1, &self.ref_block_bytes);
-        put_bytes(&mut raw, 4, &self.ref_block_hash);
-        put_uint(&mut raw, 8, self.expiration_ms);
-        put_bytes(&mut raw, 11, &contract);
+        put_header(
+            &mut raw,
+            &self.ref_block_bytes,
+            &self.ref_block_hash,
+            self.expiration_ms,
+        );
+        put_bytes(
+            &mut raw,
+            11,
+            &contract_bytes(TRIGGER_SMART_CONTRACT, TRIGGER_TYPE_URL, &call),
+        );
         put_uint(&mut raw, 14, self.timestamp_ms);
         put_uint(&mut raw, 18, self.fee_limit_sun);
         raw
@@ -215,68 +436,16 @@ impl Trc20Transfer {
 
     /// Decode `Transaction.raw` strictly (see the module notes).
     pub fn decode_raw(raw: &[u8]) -> Result<Self, TxError> {
-        let mut r = Reader::new(raw);
-        let (mut rbb, mut rbh, mut exp, mut ts, mut fee, mut contract) =
-            (None, None, None, None, None, None);
-        while let Some((f, v)) = r.next()? {
-            match f {
-                1 => rbb = Some(bytes(v)?),
-                4 => rbh = Some(bytes(v)?),
-                8 => exp = Some(uint(v)?),
-                11 => {
-                    if contract.is_some() {
-                        return refuse("more than one contract call");
-                    }
-                    contract = Some(bytes(v)?);
-                }
-                14 => ts = Some(uint(v)?),
-                18 => fee = Some(uint(v)?),
-                10 => return refuse("the transaction carries a memo"),
-                _ => return refuse(format!("unexpected transaction field {f}")),
-            }
-        }
-        let ref_block_bytes: [u8; 2] = rbb
-            .and_then(|b| b.try_into().ok())
-            .ok_or(TxError::Malformed)?;
-        let ref_block_hash: [u8; 8] = rbh
-            .and_then(|b| b.try_into().ok())
-            .ok_or(TxError::Malformed)?;
-        let contract = contract.ok_or_else(|| TxError::Refused("no contract call".into()))?;
+        Self::from_envelope(decode_envelope(raw)?)
+    }
 
-        // Transaction.Contract
-        let (mut ctype, mut param) = (None, None);
-        let mut r = Reader::new(contract);
-        while let Some((f, v)) = r.next()? {
-            match f {
-                1 => ctype = Some(uint(v)?),
-                2 => param = Some(bytes(v)?),
-                5 => {
-                    if uint(v)? != 0 {
-                        return refuse("the transaction uses a non-owner permission");
-                    }
-                }
-                _ => return refuse(format!("unexpected contract field {f}")),
-            }
-        }
-        if ctype != Some(TRIGGER_SMART_CONTRACT) {
+    fn from_envelope(env: Envelope<'_>) -> Result<Self, TxError> {
+        if env.ctype != TRIGGER_SMART_CONTRACT {
             return refuse("only a token transfer (TriggerSmartContract) can be signed");
-        }
-        // google.protobuf.Any
-        let (mut url, mut value) = (None, None);
-        let mut r = Reader::new(param.ok_or(TxError::Malformed)?);
-        while let Some((f, v)) = r.next()? {
-            match f {
-                1 => url = Some(bytes(v)?),
-                2 => value = Some(bytes(v)?),
-                _ => return Err(TxError::Malformed),
-            }
-        }
-        if url != Some(TRIGGER_TYPE_URL.as_bytes()) {
-            return refuse("unexpected contract type");
         }
         // TriggerSmartContract
         let (mut owner, mut token, mut data) = (None, None, None);
-        let mut r = Reader::new(value.ok_or(TxError::Malformed)?);
+        let mut r = Reader::new(env.value);
         while let Some((f, v)) = r.next()? {
             match f {
                 1 => owner = Some(address21(bytes(v)?)?),
@@ -292,11 +461,11 @@ impl Trc20Transfer {
         }
         let (recipient, amount) = parse_transfer_data(data.ok_or(TxError::Malformed)?)?;
         Ok(Self {
-            ref_block_bytes,
-            ref_block_hash,
-            expiration_ms: exp.ok_or(TxError::Malformed)?,
-            timestamp_ms: ts.ok_or(TxError::Malformed)?,
-            fee_limit_sun: fee.ok_or(TxError::Malformed)?,
+            ref_block_bytes: env.ref_block_bytes,
+            ref_block_hash: env.ref_block_hash,
+            expiration_ms: env.expiration_ms,
+            timestamp_ms: env.timestamp_ms,
+            fee_limit_sun: env.fee_limit_sun.ok_or(TxError::Malformed)?,
             owner: owner.ok_or(TxError::Malformed)?,
             token: token.ok_or(TxError::Malformed)?,
             recipient,
@@ -503,6 +672,44 @@ mod tests {
         assert_eq!(hex::encode(&ours), hex::encode(&raw));
         // And our strict decoder refuses wallet-cli's non-standard word.
         assert!(Trc20Transfer::decode_raw(&raw).is_err());
+    }
+
+    #[test]
+    fn trx_transfer_round_trip_and_kinds_are_kept_apart() {
+        let t = TrxTransfer {
+            ref_block_bytes: [0x12, 0x34],
+            ref_block_hash: [1, 2, 3, 4, 5, 6, 7, 8],
+            expiration_ms: 1_700_000_060_000,
+            timestamp_ms: 1_700_000_000_000,
+            owner: addr("TXJ7MoQLNCGstqko8jQHEjXwAhhwYLh5aC"),
+            recipient: addr("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"),
+            amount_sun: 25_000_000,
+        };
+        let raw = t.encode_raw();
+        assert_eq!(TrxTransfer::decode_raw(&raw), Ok(t.clone()));
+        assert_eq!(TronTx::decode_raw(&raw), Ok(TronTx::Trx(t.clone())));
+        // A TRX transfer is never read as a USDT transfer, and vice versa.
+        assert!(Trc20Transfer::decode_raw(&raw).is_err());
+        let usdt = sample(t.owner).encode_raw();
+        assert!(TrxTransfer::decode_raw(&usdt).is_err());
+        assert!(matches!(TronTx::decode_raw(&usdt), Ok(TronTx::Usdt(_))));
+        // Extras refused: fee limit, unknown field, zero amount.
+        let mut f = raw.clone();
+        put_uint(&mut f, 18, 1);
+        assert!(TrxTransfer::decode_raw(&f).is_err());
+        let mut z = t.clone();
+        z.amount_sun = 0;
+        assert!(TrxTransfer::decode_raw(&z.encode_raw()).is_err());
+        // Another contract type (e.g. 4 = vote) is refused.
+        let mut v = Vec::new();
+        put_header(&mut v, &[0, 1], &[0; 8], 1);
+        put_bytes(
+            &mut v,
+            11,
+            &contract_bytes(4, "type.googleapis.com/protocol.VoteWitnessContract", b""),
+        );
+        put_uint(&mut v, 14, 1);
+        assert!(matches!(TronTx::decode_raw(&v), Err(TxError::Refused(_))));
     }
 
     #[test]

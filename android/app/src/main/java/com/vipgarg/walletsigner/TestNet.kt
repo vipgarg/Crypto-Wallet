@@ -65,6 +65,8 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    // This tablet's other wallets: the only recipients of TRX top-ups.
+    val ownTron = remember { store.list().filter { it.id != entry.id }.map { it.public.tron } }
 
     DisposableEffect(Unit) { onDispose { wallet?.close() } }
 
@@ -118,7 +120,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     .onSuccess { step = TestStep.ShowExport(it) }
                     .onFailure { error = it.message }
             }) { Text("Show test export QR (for the PC)") }
-            Button(onClick = { error = null; step = TestStep.TronScan }) { Text("Sign a TRON test payment (Nile USDT)") }
+            Button(onClick = { error = null; step = TestStep.TronScan }) { Text("Sign a TRON test payment (Nile USDT or TRX top-up)") }
             OutlinedButton(onClick = { error = null; step = TestStep.Scan }) { Text("Sign a Bitcoin test payment (signet)") }
             OutlinedButton(onClick = { error = null; step = TestStep.Policy }) { Text("Allowlist, limits and signing log") }
             OutlinedButton(onClick = onBack) { Text("Lock and go back") }
@@ -208,7 +210,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     busy = "Checking the payment…"
                     scope.launch {
                         val r = withContext(Dispatchers.Default) {
-                            runCatching { w.reviewTron(text, now(), store.policy(entry.id)) }
+                            runCatching { w.reviewTron(text, now(), store.policy(entry.id), ownTron) }
                         }
                         busy = null
                         r.onSuccess { step = TestStep.TronReview(text, it) }
@@ -226,11 +228,14 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(r.network)
-                    Text("Token: test USDT (TRC-20)")
+                    Text(if (r.kind == "trx") "Plain TRX top-up to your own wallet" else "Token: test USDT (TRC-20)")
                     Text("Recipient: \"${r.recipientLabel}\" (on this tablet's allowlist)", fontWeight = FontWeight.SemiBold)
                     GroupedAddress(r.recipient)
-                    Text("Amount: ${r.amountUsdt} test USDT", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Fee limit: up to ${r.feeLimitTrx} test TRX")
+                    Text("Amount: ${r.amount} test ${r.unit}", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (r.kind == "trx") "Network fee: bandwidth (free daily allowance, otherwise about 0.3 test TRX)"
+                        else "Fee limit: up to ${r.feeLimitTrx} test TRX",
+                    )
                     Text("From this wallet: ${r.from}", fontFamily = FontFamily.Monospace)
                     Text("Transaction ID starts with: ${r.txid.take(8)}", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                 }
@@ -253,7 +258,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     scope.launch {
                         val res = withContext(Dispatchers.Default) {
                             runCatching {
-                                val signed = w.signTron(s.request, r.txid, typed, now(), store.policy(entry.id))
+                                val signed = w.signTron(s.request, r.txid, typed, now(), store.policy(entry.id), ownTron)
                                 // The log entry is saved before the signature is shown.
                                 store.savePolicy(entry.id, signed.policy)
                                 signed

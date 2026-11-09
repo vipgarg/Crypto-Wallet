@@ -346,6 +346,7 @@ function TronTestSend() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [form, setForm] = useState({ recipient: "", amount: "" });
+  const [kind, setKind] = useState<"usdt" | "trx">("usdt");
   const [step, setStep] = useState<TronStep>({ kind: "form" });
 
   useEffect(() => {
@@ -387,7 +388,7 @@ function TronTestSend() {
   const prepare = async (e: React.FormEvent) => {
     e.preventDefault();
     const p = await run("Building the transaction…", () =>
-      api.prepareTronTestSend(selected, form.recipient.trim(), form.amount.trim()),
+      api.prepareTronTestSend(selected, form.recipient.trim(), form.amount.trim(), kind),
     );
     if (p) setStep({ kind: "show", p });
   };
@@ -443,24 +444,68 @@ function TronTestSend() {
 
       {wallet && step.kind === "form" && (
         <form className="card form" onSubmit={(e) => void prepare(e)}>
-          <h3>Prepare a test USDT payment</h3>
+          <h3>Prepare a test payment</h3>
+          <div className="toolbar">
+            <label>
+              <input type="radio" checked={kind === "usdt"} onChange={() => setKind("usdt")} /> Test USDT
+            </label>
+            <label>
+              <input
+                type="radio"
+                checked={kind === "trx"}
+                onChange={() => {
+                  setKind("trx");
+                  setForm({ ...form, recipient: "" });
+                }}
+              />{" "}
+              TRX top-up to my own wallet
+            </label>
+          </div>
+          {kind === "usdt" ? (
+            <>
+              <label>
+                Recipient (TRON address, starts with T)
+                <input
+                  className="mono"
+                  value={form.recipient}
+                  onChange={(e) => setForm({ ...form, recipient: e.target.value })}
+                  autoComplete="off"
+                  spellCheck={false}
+                  required
+                />
+              </label>
+              <p className="hint">
+                Write the recipient on paper: you'll type its last 6 characters on the tablet. TRON addresses are
+                case-sensitive. It must also be on the tablet's own allowlist for this wallet.
+              </p>
+            </>
+          ) : (
+            <>
+              <label>
+                To which of your wallets
+                <select
+                  value={form.recipient}
+                  onChange={(e) => setForm({ ...form, recipient: e.target.value })}
+                  required
+                >
+                  <option value="">Choose…</option>
+                  {wallets
+                    .filter((w) => w.id !== selected && w.tron)
+                    .map((w) => (
+                      <option key={w.id} value={w.tron ?? ""}>
+                        {w.label} ({w.id})
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <p className="hint">
+                Plain TRX can only go to your own wallets (to pay their network fees), at most 200 TRX each. The
+                tablet checks this too, and the wallet must be on its allowlist.
+              </p>
+            </>
+          )}
           <label>
-            Recipient (TRON address, starts with T)
-            <input
-              className="mono"
-              value={form.recipient}
-              onChange={(e) => setForm({ ...form, recipient: e.target.value })}
-              autoComplete="off"
-              spellCheck={false}
-              required
-            />
-          </label>
-          <p className="hint">
-            Write the recipient on paper: you'll type its last 6 characters on the tablet. TRON addresses are
-            case-sensitive.
-          </p>
-          <label>
-            Amount (test USDT, e.g. 5 or 2.5)
+            Amount ({kind === "usdt" ? "test USDT" : "test TRX"}, e.g. 5 or 2.5)
             <input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} required />
           </label>
           <button type="submit" disabled={!!busy}>
@@ -478,9 +523,18 @@ function TronTestSend() {
               <ChunkedAddress a={step.p.recipient} />
             </dd>
             <dt>Amount</dt>
-            <dd>{step.p.amount_usdt} test USDT</dd>
-            <dt>Fee limit</dt>
-            <dd>up to {step.p.fee_limit_trx} test TRX (usually much less)</dd>
+            <dd>
+              {step.p.amount} test {step.p.unit}
+              {step.p.kind === "trx" && " (top-up to your own wallet)"}
+            </dd>
+            {step.p.kind === "usdt" && (
+              <>
+                <dt>Fee limit</dt>
+                <dd>up to {step.p.fee_limit_trx} test TRX</dd>
+              </>
+            )}
+            <dt>Estimated network cost</dt>
+            <dd>{step.p.fee_estimate}</dd>
             <dt>Transaction ID starts with</dt>
             <dd className="mono big-address">
               <strong>{step.p.txid.slice(0, 8)}</strong>

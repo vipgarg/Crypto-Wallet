@@ -366,9 +366,13 @@ pub struct BtcReviewRecord {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct TronReviewRecord {
     pub network: String,
+    /// "usdt" or "trx" (a top-up between own wallets).
+    pub kind: String,
     pub from: String,
     pub recipient: String,
-    pub amount_usdt: String,
+    pub amount: String,
+    /// "USDT" or "TRX".
+    pub unit: String,
     pub fee_limit_trx: String,
     pub txid: String,
     /// The recipient's name on this tablet's allowlist.
@@ -379,9 +383,11 @@ impl From<tron_sign::TronReview> for TronReviewRecord {
     fn from(r: tron_sign::TronReview) -> Self {
         Self {
             network: r.network,
+            kind: r.kind,
             from: r.from,
             recipient: r.recipient,
-            amount_usdt: r.amount_usdt,
+            amount: r.amount,
+            unit: r.unit,
             fee_limit_trx: r.fee_limit_trx,
             txid: r.txid,
             recipient_label: String::new(),
@@ -480,12 +486,14 @@ impl UnlockedWallet {
         qr_text: String,
         now_ms: u64,
         policy: Option<Vec<u8>>,
+        own_tron: Vec<String>,
     ) -> Result<TronReviewRecord, SignerError> {
         let raw = export::bytes_from_qr(export::TRON_REQUEST_PREFIX, &qr_text)
             .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
-        let r = tron_sign::review(&raw, &self.master()?, now_ms).map_err(tron_err)?;
+        let own = own_addresses(&own_tron);
+        let r = tron_sign::review(&raw, &self.master()?, now_ms, &own).map_err(tron_err)?;
         let (p, _) = self.policy(policy, now_ms)?;
-        let pay = tron_payment(&raw)?;
+        let pay = tron_payment(&r);
         p.check(&pay, now_ms).map_err(policy_err)?;
         let mut out: TronReviewRecord = r.into();
         out.recipient_label = p
@@ -504,11 +512,13 @@ impl UnlockedWallet {
         typed_last6: String,
         now_ms: u64,
         policy: Option<Vec<u8>>,
+        own_tron: Vec<String>,
     ) -> Result<SignedRecord, SignerError> {
         let raw = export::bytes_from_qr(export::TRON_REQUEST_PREFIX, &qr_text)
             .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let master = self.master()?;
-        let review = tron_sign::review(&raw, &master, now_ms).map_err(tron_err)?;
+        let own = own_addresses(&own_tron);
+        let review = tron_sign::review(&raw, &master, now_ms, &own).map_err(tron_err)?;
         if review.txid != expected_txid {
             return Err(SignerError::Sign {
                 msg: "the request changed since it was reviewed".into(),
@@ -528,9 +538,9 @@ impl UnlockedWallet {
         }
         let (mut p, key) = self.policy(policy, now_ms)?;
         let receipt = p
-            .record(&tron_payment(&raw)?, &review.txid, now_ms)
+            .record(&tron_payment(&review), &review.txid, now_ms)
             .map_err(policy_err)?;
-        let (sig, _) = tron_sign::sign(&raw, &master, now_ms).map_err(tron_err)?;
+        let (sig, _) = tron_sign::sign(&raw, &master, now_ms, &own).map_err(tron_err)?;
         // txid (32) ‖ signature (65) ‖ receipt: log number (8) ‖ log head (32).
         let mut out = tron_tx::txid(&raw).to_vec();
         out.extend_from_slice(&sig);
@@ -652,14 +662,21 @@ fn btc_payment(r: &btc_sign::Review) -> Payment {
     }
 }
 
-fn tron_payment(raw: &[u8]) -> Result<Payment, SignerError> {
-    let t = tron_tx::Trc20Transfer::decode_raw(raw)
-        .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
-    Ok(Payment {
-        asset: Asset::UsdtTronNile,
-        recipient: t.recipient.to_base58(),
-        amount: t.amount,
-    })
+fn tron_payment(r: &tron_sign::TronReview) -> Payment {
+    Payment {
+        asset: if r.kind == "trx" {
+            Asset::TrxNile
+        } else {
+            Asset::UsdtTronNile
+        },
+        recipient: r.recipient.clone(),
+        amount: r.amount_base,
+    }
+}
+
+/// This tablet's wallets' TRON addresses (unparsable entries are ignored).
+fn own_addresses(list: &[String]) -> Vec<chain_tron::TronAddress> {
+    list.iter().filter_map(|a| a.trim().parse().ok()).collect()
 }
 
 /// The watch-only export string shown as a QR code for the PC app.
@@ -879,10 +896,13 @@ mod tests {
         let raw = t.encode_raw();
         let qr = export::bytes_to_qr(export::TRON_REQUEST_PREFIX, &raw).expect("qr");
         let review = w
-            .review_tron(qr.clone(), now, Some(policy.clone()))
+            .review_tron(qr.clone(), now, Some(policy.clone()), vec![])
             .expect("review");
         assert_eq!(review.recipient_label, "Shop");
-        assert_eq!(review.amount_usdt, "2.5");
+        assert_eq!(
+            (review.amount.as_str(), review.unit.as_str()),
+            ("2.5", "USDT")
+        );
         assert_eq!(review.from, me.to_base58());
         // Case matters for TRON: "LjGt" lowercase is refused.
         assert!(w
@@ -891,7 +911,8 @@ mod tests {
                 review.txid.clone(),
                 "zgjlj6t".chars().skip(1).collect(),
                 now,
-                Some(policy.clone())
+                Some(policy.clone()),
+                vec![]
             )
             .is_err());
         let signed = w
@@ -901,6 +922,7 @@ mod tests {
                 "gjLj6t".into(),
                 now,
                 Some(policy),
+                vec![],
             )
             .expect("sign");
         assert_eq!(signed.seq, 2);
@@ -926,7 +948,9 @@ mod tests {
                 now,
             )
             .expect("limit");
-        let e = w.review_tron(qr, now, Some(policy)).expect_err("limit");
+        let e = w
+            .review_tron(qr, now, Some(policy), vec![])
+            .expect_err("limit");
         assert!(e.to_string().contains("daily limit"), "{e}");
     }
 

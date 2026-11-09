@@ -22,6 +22,14 @@ Sources: Nile node `nile.trongrid.io` and the Nile USDT contract are taken from 
 - Data = exactly 68 bytes `transfer(address,uint256)` with standard zero-padded words; amount > 0; recipient ≠ this wallet; no TRX or other token sent along.
 - Fee limit 0 < x ≤ 30 TRX; validity (expiration − timestamp) ≤ 10 minutes; not long expired and not dated in the future by the tablet's clock (±10 minutes).
 
+## TRX top-ups between your own wallets (§8.3b)
+
+Sending USDT costs TRX, so each wallet needs a little. Test send → USDT on TRON Nile → **TRX top-up to my own wallet**: the recipient is chosen from your own wallets (the PC refuses anything else), at most 200 TRX. The transaction is a plain `TransferContract` (type 1), built locally, with no fee limit field. The tablet signs it only if the recipient is **another wallet on this tablet** and on its allowlist, within the daily TRX limit; a TRX transfer is never read as a USDT one or the other way round, and any other contract type (votes, freezing, permission updates…) is refused.
+
+## Fee estimate
+
+Before the QR is shown, the PC estimates the network cost, for display only: a dry-run of the USDT transfer gives the energy needed (`triggerconstantcontract`), the account's own energy and bandwidth come from `getaccountresource`, and the prices from `getchainparameters` (`getEnergyFee`, `getTransactionFee`). Shown as "about X TRX (energy N needed, M available; bandwidth …)". Nothing that gets signed depends on it; the fee limit (30 TRX) still caps the cost.
+
 ## The tablet's signing policy (crates/signer-core/src/policy.rs)
 
 Holds even if the PC is fully compromised. One policy per wallet, saved next to its vault (`wallets/<id>.policy`), sealed with an HMAC whose key comes from the wallet's seed: it can be read or changed only after unlocking, and a file edited outside the app (or copied from another wallet) is refused. Deleting it gives an empty allowlist, so nothing can be signed until newly added addresses have waited.
@@ -39,6 +47,8 @@ Holds even if the PC is fully compromised. One policy per wallet, saved next to 
 - PC: build from a block, signature from another key / for another transaction / truncated → refused; broadcast success and a hex-encoded refusal message.
 - Through the tablet bridge: unlock → review → lowercase last-6 refused → sign → PC-side recovery gives the wallet's address.
 - Policy: unknown and still-waiting addresses refused; rolling daily limit; raise waits, lower doesn't; edited file, other wallet's file, wrong key, re-sealed broken chain → refused; clock moved back refused; receipts round-trip; the PC warns on a jump or a step back.
+- TRX: encode/decode round trip; a TRX transfer isn't read as USDT (and vice versa); fee-limit field, zero amount, other contract types refused; tablet refuses a recipient that isn't one of its own wallets and more than 200 TRX.
+- Fee estimate: dry-run energy, own resources and chain prices combined (mock node).
 - Account permissions: extra owner key, replaced active key, threshold 2, two active permissions, a witness permission → refused before building.
 
 ## Owner test
@@ -48,5 +58,3 @@ Holds even if the PC is fully compromised. One policy per wallet, saved next to 
 ## Not yet
 
 - A second independent Nile node (only TronGrid is known).
-- The TRX top-up between own wallets (§8.3b).
-- Energy estimate before signing (the fee limit caps the cost).

@@ -190,9 +190,14 @@ export interface NileBalances {
 }
 
 export interface PreparedTron {
+  /** "usdt" or "trx" (a top-up between your own wallets). */
+  kind: string;
   recipient: string;
-  amount_usdt: string;
+  amount: string;
+  unit: string;
   fee_limit_trx: string;
+  /** Rough network cost, for display only. */
+  fee_estimate: string;
   txid: string;
   qr_text: string;
   qr_size: number;
@@ -389,8 +394,8 @@ export const api = {
   getAuditLog: () => call<AuditView>("get_audit_log"),
   getSettings: () => call<Settings>("get_settings"),
   getNileBalances: (id: string) => call<NileBalances>("get_nile_balances", { id }),
-  prepareTronTestSend: (id: string, recipient: string, amount: string) =>
-    call<PreparedTron>("prepare_tron_test_send", { id, recipient, amount }),
+  prepareTronTestSend: (id: string, recipient: string, amount: string, kind: "usdt" | "trx") =>
+    call<PreparedTron>("prepare_tron_test_send", { id, recipient, amount, kind }),
   finishTronTestSend: (signedQr: string) => call<TronSent>("finish_tron_test_send", { signedQr }),
   setBitcoinEnabled: (enabled: boolean) => call<Settings>("set_bitcoin_enabled", { enabled }),
   getAddressBook: () => call<AddressBookView>("get_address_book"),

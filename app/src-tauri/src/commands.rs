@@ -1067,22 +1067,29 @@ pub async fn get_nile_balances(
 
 #[derive(Serialize)]
 pub struct PreparedTron {
+    /// "usdt" or "trx".
+    kind: String,
     recipient: String,
-    amount_usdt: String,
+    amount: String,
+    unit: String,
     fee_limit_trx: String,
+    /// Rough network cost (display only), or why it couldn't be estimated.
+    fee_estimate: String,
     txid: String,
     qr_text: String,
     qr_size: usize,
     qr_modules: Vec<bool>,
 }
 
-/// Build a Nile test USDT transfer locally and show it as a QR code.
+/// Build a Nile test transfer locally and show it as a QR code: test USDT
+/// (`kind` "usdt") or a plain TRX top-up to one of your own wallets ("trx").
 #[tauri::command]
 pub async fn prepare_tron_test_send(
     state: State<'_, AppState>,
     id: String,
     recipient: String,
     amount: String,
+    kind: String,
 ) -> Result<PreparedTron, String> {
     let (wallet_id, owner) = wallet_tron(&state, &id)?;
     let to: chain_tron::TronAddress = recipient
@@ -1093,19 +1100,57 @@ pub async fn prepare_tron_test_send(
         return Err("The recipient is this wallet itself.".into());
     }
     let amount_units = tron_test::parse_usdt(&amount)?;
+    let trx = match kind.as_str() {
+        "usdt" => false,
+        "trx" => {
+            // Top-ups only between your own wallets (the tablet checks this too).
+            let own = read_registry(&state)?
+                .wallets
+                .iter()
+                .any(|w| w.id.as_str() != wallet_id && w.tron == Some(to));
+            if !own {
+                return Err("TRX can only be sent to another of your own wallets (a top-up for its network fees). Pick one of your wallets as the recipient.".into());
+            }
+            true
+        }
+        _ => return Err("Unknown kind of payment.".into()),
+    };
     tokio::time::timeout(
         Duration::from_secs(30),
         tron_test::require_ready_sender(&state.http, &state.config, &owner),
     )
     .await
     .map_err(|_| "The Nile node didn't answer in time.".to_owned())??;
-    let t = tokio::time::timeout(
-        Duration::from_secs(30),
-        tron_test::build(&state.http, &state.config, owner, to, amount_units),
+    let tx = if trx {
+        tron_tx::TronTx::Trx(
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                tron_test::build_trx(&state.http, &state.config, owner, to, amount_units),
+            )
+            .await
+            .map_err(|_| "The Nile node didn't answer in time.".to_owned())??,
+        )
+    } else {
+        tron_tx::TronTx::Usdt(
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                tron_test::build(&state.http, &state.config, owner, to, amount_units),
+            )
+            .await
+            .map_err(|_| "The Nile node didn't answer in time.".to_owned())??,
+        )
+    };
+    let raw = tx.encode_raw();
+    let fee_estimate = match tokio::time::timeout(
+        Duration::from_secs(20),
+        tron_test::estimate_fee(&state.http, &state.config, &tx, raw.len()),
     )
     .await
-    .map_err(|_| "The Nile node didn't answer in time.".to_owned())??;
-    let raw = t.encode_raw();
+    {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => format!("couldn't estimate ({e})"),
+        Err(_) => "couldn't estimate (the node didn't answer in time)".to_owned(),
+    };
     let qr_text = watch_export::bytes_to_qr(watch_export::TRON_REQUEST_PREFIX, &raw)
         .map_err(|e| e.to_string())?;
     let qr = crate::qr::matrix_large(&qr_text)?;
@@ -1116,9 +1161,16 @@ pub async fn prepare_tron_test_send(
         raw,
     });
     Ok(PreparedTron {
+        kind: if trx { "trx" } else { "usdt" }.into(),
         recipient: to.to_base58(),
-        amount_usdt: amount.trim().to_owned(),
-        fee_limit_trx: (tron_test::FEE_LIMIT_SUN / 1_000_000).to_string(),
+        amount: amount.trim().to_owned(),
+        unit: if trx { "TRX" } else { "USDT" }.into(),
+        fee_limit_trx: if trx {
+            "0".into()
+        } else {
+            (tron_test::FEE_LIMIT_SUN / 1_000_000).to_string()
+        },
+        fee_estimate,
         txid,
         qr_text,
         qr_size: qr.size,

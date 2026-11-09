@@ -13,6 +13,7 @@ name = "signer_ffi"
 
 [dependencies]
 bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+chain-tron = { path = "../chain-tron" }
 qrcode = { version = "0.14", default-features = false }
 signer-core = { path = "../signer-core" }
 tron-tx = { path = "../tron-tx" }
@@ -23,7 +24,6 @@ zeroize = "1"
 
 [dev-dependencies]
 btc-send = { path = "../btc-send" }
-chain-tron = { path = "../chain-tron" }
 
 [lints]
 workspace = true

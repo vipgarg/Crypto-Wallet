@@ -12,13 +12,17 @@
 //! - fee limit at most 30 TRX;
 //! - expiration at most 10 minutes after the transaction's timestamp, and
 //!   not already long past by this tablet's clock.
+//!
+//! Plain TRX transfers (`TransferContract`) are signed only as **top-ups
+//! between your own wallets** (§8.3b): the recipient must be another wallet
+//! on this tablet, at most 200 TRX each.
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::Secp256k1;
 use chain_tron::TronAddress;
 use serde::Serialize;
 use thiserror::Error;
-use tron_tx::{Trc20Transfer, TxError};
+use tron_tx::{TronTx, TxError};
 
 /// The only TRC-20 contract this build signs for: Nile test USDT.
 pub use tron_tx::NILE_USDT;
@@ -28,6 +32,8 @@ pub const MAX_FEE_LIMIT_SUN: u64 = 30_000_000;
 pub const MAX_VALIDITY_MS: u64 = 10 * 60 * 1000;
 /// Tolerance for this tablet's clock when checking expiration.
 pub const CLOCK_TOLERANCE_MS: u64 = 10 * 60 * 1000;
+/// Largest TRX top-up between own wallets (200 TRX, in sun).
+pub const MAX_TRX_TOPUP_SUN: u64 = 200_000_000;
 /// TRON address path (BIP-44 coin type 195), as for the watch-only export.
 pub const TRON_KEY_PATH: &str = "m/44'/195'/0'/0/0";
 
@@ -49,12 +55,19 @@ fn refuse<T>(why: impl Into<String>) -> Result<T, TronSignError> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TronReview {
     pub network: String,
+    /// "usdt" or "trx".
+    pub kind: String,
     pub from: String,
     pub recipient: String,
-    /// Exact decimal USDT amount, e.g. "12.5".
-    pub amount_usdt: String,
+    /// Exact decimal amount, e.g. "12.5".
+    pub amount: String,
+    /// "USDT" or "TRX".
+    pub unit: String,
+    /// Fee limit in TRX ("0" for plain TRX transfers, which use bandwidth).
     pub fee_limit_trx: String,
     pub txid: String,
+    /// Base units (for the tablet's limits).
+    pub amount_base: u128,
 }
 
 fn key(master: &Xpriv) -> Result<(bitcoin::secp256k1::SecretKey, TronAddress), TronSignError> {
@@ -88,48 +101,77 @@ fn usdt_text(v: u128) -> String {
     }
 }
 
-/// Check a raw transaction for signing. `now_ms` is the tablet's clock.
-pub fn review(raw: &[u8], master: &Xpriv, now_ms: u64) -> Result<TronReview, TronSignError> {
-    let t = Trc20Transfer::decode_raw(raw)?;
+/// Check a raw transaction for signing. `now_ms` is the tablet's clock;
+/// `own` are this tablet's other wallets (the only TRX top-up recipients).
+pub fn review(
+    raw: &[u8],
+    master: &Xpriv,
+    now_ms: u64,
+    own: &[TronAddress],
+) -> Result<TronReview, TronSignError> {
+    let tx = TronTx::decode_raw(raw)?;
     let (_, me) = key(master)?;
-    let usdt: TronAddress = NILE_USDT.parse().map_err(|_| TronSignError::Derivation)?;
-    if t.token != usdt {
-        return refuse(
-            "this isn't the TRON Nile test USDT contract (this build only signs test-network USDT)",
-        );
-    }
-    if t.owner != me {
+    if tx.owner() != me {
         return refuse("the transaction isn't from this wallet's TRON address");
     }
-    if t.amount == 0 {
-        return refuse("the amount is zero");
-    }
-    if t.recipient == me {
+    if tx.recipient() == me {
         return refuse("the recipient is this wallet itself");
     }
-    if t.fee_limit_sun == 0 || t.fee_limit_sun > MAX_FEE_LIMIT_SUN {
-        return refuse(format!(
-            "the fee limit must be between 0 and {} TRX",
-            MAX_FEE_LIMIT_SUN / 1_000_000
-        ));
-    }
-    let validity = t.expiration_ms.checked_sub(t.timestamp_ms);
+    let (timestamp_ms, expiration_ms) = tx.times();
+    let validity = expiration_ms.checked_sub(timestamp_ms);
     if !validity.is_some_and(|v| (1..=MAX_VALIDITY_MS).contains(&v)) {
         return refuse("the transaction's validity period is unusual (more than 10 minutes)");
     }
-    if t.expiration_ms + CLOCK_TOLERANCE_MS < now_ms {
+    if expiration_ms + CLOCK_TOLERANCE_MS < now_ms {
         return refuse("the transaction has already expired; build it again on the PC");
     }
-    if t.timestamp_ms > now_ms + CLOCK_TOLERANCE_MS {
+    if timestamp_ms > now_ms + CLOCK_TOLERANCE_MS {
         return refuse("the transaction is dated in the future by this tablet's clock; check the tablet's date and time");
     }
+    let (kind, unit, amount, fee) = match &tx {
+        TronTx::Usdt(t) => {
+            let usdt: TronAddress = NILE_USDT.parse().map_err(|_| TronSignError::Derivation)?;
+            if t.token != usdt {
+                return refuse(
+                    "this isn't the TRON Nile test USDT contract (this build only signs test-network USDT)",
+                );
+            }
+            if t.amount == 0 {
+                return refuse("the amount is zero");
+            }
+            if t.fee_limit_sun == 0 || t.fee_limit_sun > MAX_FEE_LIMIT_SUN {
+                return refuse(format!(
+                    "the fee limit must be between 0 and {} TRX",
+                    MAX_FEE_LIMIT_SUN / 1_000_000
+                ));
+            }
+            ("usdt", "USDT", t.amount, t.fee_limit_sun)
+        }
+        TronTx::Trx(t) => {
+            if !own.contains(&t.recipient) {
+                return refuse(
+                    "TRX can only be sent to your own wallets on this tablet (to top up their network fees)",
+                );
+            }
+            if t.amount_sun > MAX_TRX_TOPUP_SUN {
+                return refuse(format!(
+                    "a TRX top-up is limited to {} TRX",
+                    MAX_TRX_TOPUP_SUN / 1_000_000
+                ));
+            }
+            ("trx", "TRX", u128::from(t.amount_sun), 0)
+        }
+    };
     Ok(TronReview {
         network: "TRON Nile (test network, coins have no value)".into(),
+        kind: kind.into(),
         from: me.to_base58(),
-        recipient: t.recipient.to_base58(),
-        amount_usdt: usdt_text(t.amount),
-        fee_limit_trx: usdt_text(u128::from(t.fee_limit_sun)),
+        recipient: tx.recipient().to_base58(),
+        amount: usdt_text(amount),
+        unit: unit.into(),
+        fee_limit_trx: usdt_text(u128::from(fee)),
         txid: hex_lower(&tron_tx::txid(raw)),
+        amount_base: amount,
     })
 }
 
@@ -143,8 +185,9 @@ pub fn sign(
     raw: &[u8],
     master: &Xpriv,
     now_ms: u64,
+    own: &[TronAddress],
 ) -> Result<([u8; 65], TronReview), TronSignError> {
-    let review = review(raw, master, now_ms)?;
+    let review = review(raw, master, now_ms, own)?;
     let (sk, me) = key(master)?;
     let sk2 = secp256k1::SecretKey::from_slice(&sk.secret_bytes())
         .map_err(|_| TronSignError::Derivation)?;
@@ -166,8 +209,8 @@ mod tests {
 
     const NOW: u64 = 1_800_000_000_000;
 
-    fn tx(me: TronAddress) -> Trc20Transfer {
-        Trc20Transfer {
+    fn tx(me: TronAddress) -> tron_tx::Trc20Transfer {
+        tron_tx::Trc20Transfer {
             ref_block_bytes: [1, 2],
             ref_block_hash: [3; 8],
             expiration_ms: NOW + 120_000,
@@ -192,11 +235,11 @@ mod tests {
         let m = master();
         let me = wallet_address(&m).expect("me");
         let raw = tx(me).encode_raw();
-        let r = review(&raw, &m, NOW).expect("review");
-        assert_eq!(r.amount_usdt, "12.5");
+        let r = review(&raw, &m, NOW, &[]).expect("review");
+        assert_eq!((r.amount.as_str(), r.unit.as_str()), ("12.5", "USDT"));
         assert_eq!(r.fee_limit_trx, "30");
         assert_eq!(r.recipient, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
-        let (sig, _) = sign(&raw, &m, NOW).expect("sign");
+        let (sig, _) = sign(&raw, &m, NOW, &[]).expect("sign");
         assert_eq!(tron_tx::recover_signer(&raw, &sig), Ok(me));
     }
 
@@ -223,29 +266,74 @@ mod tests {
         t.token = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
             .parse()
             .expect("mainnet usdt");
-        refused(review(&t.encode_raw(), &m, NOW), "test USDT");
+        refused(review(&t.encode_raw(), &m, NOW, &[]), "test USDT");
 
         let mut t = tx(me);
         t.owner = "TUUSMd58eC3fKx3fn7whxJyr1FR56tgaP8".parse().expect("other");
-        refused(review(&t.encode_raw(), &m, NOW), "isn't from this wallet");
+        refused(
+            review(&t.encode_raw(), &m, NOW, &[]),
+            "isn't from this wallet",
+        );
 
         let mut t = tx(me);
         t.fee_limit_sun = 31_000_000;
-        refused(review(&t.encode_raw(), &m, NOW), "fee limit");
+        refused(review(&t.encode_raw(), &m, NOW, &[]), "fee limit");
 
         let mut t = tx(me);
         t.expiration_ms = t.timestamp_ms + 24 * 3600 * 1000;
-        refused(review(&t.encode_raw(), &m, NOW), "validity");
+        refused(review(&t.encode_raw(), &m, NOW, &[]), "validity");
 
         let t = tx(me);
-        refused(review(&t.encode_raw(), &m, NOW + 3600 * 1000), "expired");
+        refused(
+            review(&t.encode_raw(), &m, NOW + 3600 * 1000, &[]),
+            "expired",
+        );
 
         let mut t = tx(me);
         t.amount = 0;
-        refused(review(&t.encode_raw(), &m, NOW), "zero");
+        refused(review(&t.encode_raw(), &m, NOW, &[]), "zero");
 
         let mut t = tx(me);
         t.recipient = me;
-        refused(review(&t.encode_raw(), &m, NOW), "itself");
+        refused(review(&t.encode_raw(), &m, NOW, &[]), "itself");
+    }
+
+    #[test]
+    fn trx_only_to_own_wallets_and_capped() {
+        let m = master();
+        let me = wallet_address(&m).expect("me");
+        let other_own: TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("own");
+        let t = tron_tx::TrxTransfer {
+            ref_block_bytes: [1, 2],
+            ref_block_hash: [3; 8],
+            expiration_ms: NOW + 120_000,
+            timestamp_ms: NOW,
+            owner: me,
+            recipient: other_own,
+            amount_sun: 25_000_000,
+        };
+        let raw = t.encode_raw();
+        refused(review(&raw, &m, NOW, &[]), "your own wallets");
+        let r = review(&raw, &m, NOW, &[other_own]).expect("own");
+        assert_eq!(
+            (r.kind.as_str(), r.amount.as_str(), r.unit.as_str()),
+            ("trx", "25", "TRX")
+        );
+        assert_eq!(r.fee_limit_trx, "0");
+        let (sig, _) = sign(&raw, &m, NOW, &[other_own]).expect("sign");
+        assert_eq!(tron_tx::recover_signer(&raw, &sig), Ok(me));
+        let mut big = t.clone();
+        big.amount_sun = MAX_TRX_TOPUP_SUN + 1;
+        refused(
+            review(&big.encode_raw(), &m, NOW, &[other_own]),
+            "limited to 200",
+        );
+        let mut stale = t;
+        stale.expiration_ms = NOW - 3_600_000;
+        stale.timestamp_ms = NOW - 3_660_000;
+        refused(
+            review(&stale.encode_raw(), &m, NOW, &[other_own]),
+            "expired",
+        );
     }
 }
