@@ -35,6 +35,9 @@ const ALLOWED = new Set([
   "get_nile_balances",
   "prepare_tron_test_send",
   "finish_tron_test_send",
+  "get_sepolia_balances",
+  "prepare_eth_test_send",
+  "finish_eth_test_send",
 ]);
 
 window.__TAURI_ISOLATION_HOOK__ = (payload) => {

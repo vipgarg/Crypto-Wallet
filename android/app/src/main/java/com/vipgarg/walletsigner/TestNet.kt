@@ -28,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.signer_ffi.BtcReviewRecord
+import uniffi.signer_ffi.EthReviewRecord
 import uniffi.signer_ffi.TronReviewRecord
 import uniffi.signer_ffi.UnlockedWallet
 import uniffi.signer_ffi.unlockVault
@@ -42,6 +43,9 @@ private sealed interface TestStep {
     data class TronReview(val request: String, val review: TronReviewRecord) : TestStep
     data class TronSigned(val text: String, val review: TronReviewRecord, val seq: ULong) : TestStep
     data object Policy : TestStep
+    data object EthScan : TestStep
+    data class EthReview(val request: String, val review: EthReviewRecord) : TestStep
+    data class EthSigned(val text: String, val review: EthReviewRecord, val seq: ULong) : TestStep
 }
 
 private fun sats(v: ULong): String {
@@ -71,7 +75,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
     DisposableEffect(Unit) { onDispose { wallet?.close() } }
 
     Title("Test networks: ${entry.label}")
-    Hint("TRON Nile and Bitcoin signet: test coins with no value. Practise here before any real signing exists.", WARN)
+    Hint("TRON Nile, Ethereum Sepolia and Bitcoin signet: test coins with no value. Practise here before any real signing exists.", WARN)
     error?.let { Hint(it, BAD) }
     busy?.let { Hint(it) }
 
@@ -121,6 +125,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     .onFailure { error = it.message }
             }) { Text("Show test export QR (for the PC)") }
             Button(onClick = { error = null; step = TestStep.TronScan }) { Text("Sign a TRON test payment (Nile USDT or TRX top-up)") }
+            Button(onClick = { error = null; step = TestStep.EthScan }) { Text("Sign an Ethereum test payment (Sepolia USDT)") }
             OutlinedButton(onClick = { error = null; step = TestStep.Scan }) { Text("Sign a Bitcoin test payment (signet)") }
             OutlinedButton(onClick = { error = null; step = TestStep.Policy }) { Text("Allowlist, limits and signing log") }
             OutlinedButton(onClick = onBack) { Text("Lock and go back") }
@@ -280,6 +285,82 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
         }
 
         TestStep.Policy -> PolicyScreen(w, entry, store, onBack = { step = TestStep.Menu })
+
+        TestStep.EthScan -> {
+            Hint("On the PC: Test send → USDT on Ethereum Sepolia → Build payment. Then scan the QR it shows.")
+            QrScanner(
+                prefix = "WER1:",
+                wrongHint = "That isn't an Ethereum payment request from the PC (it should start with WER1).",
+                onResult = { text ->
+                    busy = "Checking the payment…"
+                    scope.launch {
+                        val r = withContext(Dispatchers.Default) {
+                            runCatching { w.reviewEth(text, now(), store.policy(entry.id)) }
+                        }
+                        busy = null
+                        r.onSuccess { step = TestStep.EthReview(text, it) }
+                            .onFailure { error = it.message; step = TestStep.Menu }
+                    }
+                },
+                onCancel = { step = TestStep.Menu },
+            )
+        }
+
+        is TestStep.EthReview -> {
+            var typed by remember(s) { mutableStateOf("") }
+            val r = s.review
+            Text("Check every line against the PC and your paper", fontWeight = FontWeight.SemiBold)
+            Card {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(r.network)
+                    Text("Token: test USDT (ERC-20)")
+                    Text("Recipient: \"${r.recipientLabel}\" (on this tablet's allowlist)", fontWeight = FontWeight.SemiBold)
+                    GroupedAddress(r.recipient)
+                    Text("Amount: ${r.amountUsdt} test USDT", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Network fee: at most ${r.maxFeeEth} test ETH")
+                    Text("From this wallet: ${r.from}", fontFamily = FontFamily.Monospace)
+                    Text("Nonce: ${r.nonce}")
+                    Text("Request ID starts with: ${r.signingHash.take(8)}", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+            }
+            HorizontalDivider()
+            Hint("To approve, type the LAST 6 characters of the recipient address from your PAPER address book. An Ethereum transaction doesn't expire: sign only what you send now.")
+            SecureInput(
+                key = "last6",
+                value = typed,
+                onChange = { typed = it.filter { c -> c.isLetterOrDigit() }.take(6) },
+                label = "Last 6 characters",
+                layout = KeyLayout.TEXT,
+                masked = false,
+                maxLength = 6,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { step = TestStep.Menu }) { Text("Reject") }
+                Button(enabled = typed.length == 6 && busy == null, onClick = {
+                    busy = "Signing…"
+                    scope.launch {
+                        val res = withContext(Dispatchers.Default) {
+                            runCatching {
+                                val signed = w.signEth(s.request, r.signingHash, typed, now(), store.policy(entry.id))
+                                // The log entry is saved before the signature is shown.
+                                store.savePolicy(entry.id, signed.policy)
+                                signed
+                            }
+                        }
+                        busy = null
+                        res.onSuccess { step = TestStep.EthSigned(it.qrText, r, it.seq) }
+                            .onFailure { error = it.message }
+                    }
+                }) { Text("Approve and sign") }
+            }
+        }
+
+        is TestStep.EthSigned -> {
+            Text("Signed", fontWeight = FontWeight.SemiBold, color = OK)
+            Hint("On the PC: Scan the signed QR from the tablet. Request ID starts with ${s.review.signingHash.take(8)}. Signature #${s.seq} in this tablet's signing log.")
+            QrImage(s.text)
+            OutlinedButton(onClick = { step = TestStep.Menu }) { Text("Done") }
+        }
 
         is TestStep.Signed -> {
             Text("Signed", fontWeight = FontWeight.SemiBold, color = OK)

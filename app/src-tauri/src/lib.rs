@@ -1,6 +1,7 @@
 //! Watch-only wallet desktop app. Holds no seeds or private keys.
 
 pub mod commands;
+pub mod eth_test;
 pub mod qr;
 pub mod session;
 pub mod testnet;
@@ -52,6 +53,7 @@ pub fn run() {
                 last_check_problems: std::sync::Mutex::new(None),
                 pending_send: std::sync::Mutex::new(None),
                 pending_tron: std::sync::Mutex::new(None),
+                pending_eth: std::sync::Mutex::new(None),
             });
 
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -95,6 +97,9 @@ pub fn run() {
             commands::get_nile_balances,
             commands::prepare_tron_test_send,
             commands::finish_tron_test_send,
+            commands::get_sepolia_balances,
+            commands::prepare_eth_test_send,
+            commands::finish_eth_test_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

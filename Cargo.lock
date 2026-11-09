@@ -1124,6 +1124,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "eth-tx"
+version = "0.1.0"
+dependencies = [
+ "chain-eth",
+ "hex",
+ "secp256k1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3628,6 +3638,7 @@ dependencies = [
  "chain-btc",
  "chain-eth",
  "chain-tron",
+ "eth-tx",
  "getrandom 0.2.17",
  "hex",
  "secp256k1",
@@ -3647,7 +3658,9 @@ version = "0.1.0"
 dependencies = [
  "bitcoin",
  "btc-send",
+ "chain-eth",
  "chain-tron",
+ "eth-tx",
  "qrcode",
  "signer-core",
  "thiserror 2.0.21",
@@ -4959,6 +4972,7 @@ dependencies = [
  "chain-eth",
  "chain-tron",
  "data-sources",
+ "eth-tx",
  "futures-util",
  "hex",
  "qrcode",

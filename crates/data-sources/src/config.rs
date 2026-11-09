@@ -87,6 +87,9 @@ struct RawPinned {
     /// TRON Nile **test** USDT (test network only).
     #[serde(default)]
     usdt_trc20_nile: Option<String>,
+    /// Ethereum Sepolia **test** USDT (test network only).
+    #[serde(default)]
+    usdt_erc20_sepolia: Option<String>,
 }
 
 /// An Esplora provider on Bitcoin **signet** (test network; Phase 2 testing).
@@ -109,6 +112,9 @@ struct RawConfig {
     /// TRON Nile test-network nodes (same fields as signet providers).
     #[serde(default)]
     nile_providers: Vec<SignetProvider>,
+    /// Ethereum Sepolia test-network JSON-RPC nodes.
+    #[serde(default)]
+    sepolia_providers: Vec<SignetProvider>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +130,10 @@ pub struct NetworkConfig {
     pub nile_providers: Vec<SignetProvider>,
     /// Pinned TRON Nile test USDT contract.
     pub usdt_trc20_nile: Option<TronAddress>,
+    /// Ethereum Sepolia JSON-RPC nodes (test network only).
+    pub sepolia_providers: Vec<SignetProvider>,
+    /// Pinned Ethereum Sepolia test USDT contract.
+    pub usdt_erc20_sepolia: Option<EthAddress>,
     /// SHA-256 of the exact config text, shown in the app so you can compare
     /// it with the reviewed release record.
     pub sha256: String,
@@ -206,7 +216,24 @@ impl NetworkConfig {
                 "the Nile test USDT must differ from the mainnet USDT".into(),
             ));
         }
-        for p in raw.signet_providers.iter().chain(&raw.nile_providers) {
+        let usdt_erc20_sepolia =
+            match &raw.pinned.usdt_erc20_sepolia {
+                None => None,
+                Some(s) => Some(s.parse::<EthAddress>().map_err(
+                    |e: chain_eth::EthAddressError| ConfigError::Contract(e.to_string()),
+                )?),
+            };
+        if usdt_erc20_sepolia == Some(usdt_erc20) {
+            return Err(ConfigError::Contract(
+                "the Sepolia test USDT must differ from the mainnet USDT".into(),
+            ));
+        }
+        for p in raw
+            .signet_providers
+            .iter()
+            .chain(&raw.nile_providers)
+            .chain(&raw.sepolia_providers)
+        {
             let err = |m| ConfigError::Provider(p.id.clone(), m);
             if !ids.insert(p.id.clone()) {
                 return Err(err("duplicate id"));
@@ -236,6 +263,8 @@ impl NetworkConfig {
             signet_providers: raw.signet_providers,
             nile_providers: raw.nile_providers,
             usdt_trc20_nile,
+            sepolia_providers: raw.sepolia_providers,
+            usdt_erc20_sepolia,
             sha256: hex::encode(hasher.finalize()),
         })
     }

@@ -12,7 +12,9 @@
 use std::sync::Arc;
 
 use signer_core::policy::{self, Asset, Net, Payment, Policy, PolicyError};
-use signer_core::{accounts, attestation, btc_sign, entropy, export, seed, tron_sign, vault};
+use signer_core::{
+    accounts, attestation, btc_sign, entropy, eth_sign, export, seed, tron_sign, vault,
+};
 use wallet_types::{Tier, WalletId};
 use zeroize::Zeroizing;
 
@@ -395,6 +397,34 @@ impl From<tron_sign::TronReview> for TronReviewRecord {
     }
 }
 
+/// What the tablet shows before you approve an Ethereum (Sepolia) test payment.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct EthReviewRecord {
+    pub network: String,
+    pub from: String,
+    pub recipient: String,
+    pub amount_usdt: String,
+    /// Worst-case network fee (gas limit × max fee), in test ETH.
+    pub max_fee_eth: String,
+    pub nonce: u64,
+    /// Hex signing hash (its start is shown on the PC too).
+    pub signing_hash: String,
+    /// The recipient's name on this tablet's allowlist.
+    pub recipient_label: String,
+}
+
+fn eth_err(e: eth_sign::EthSignError) -> SignerError {
+    SignerError::Sign { msg: e.to_string() }
+}
+
+fn eth_payment(r: &eth_sign::EthReview) -> Payment {
+    Payment {
+        asset: Asset::UsdtEthSepolia,
+        recipient: r.recipient.clone(),
+        amount: r.amount_base,
+    }
+}
+
 fn tron_err(e: tron_sign::TronSignError) -> SignerError {
     SignerError::Sign { msg: e.to_string() }
 }
@@ -597,6 +627,74 @@ impl UnlockedWallet {
         })
     }
 
+    /// Check an Ethereum request scanned from the PC (`WER1:` QR text),
+    /// including the tablet's allowlist and daily limit. Nothing is signed.
+    pub fn review_eth(
+        &self,
+        qr_text: String,
+        now_ms: u64,
+        policy: Option<Vec<u8>>,
+    ) -> Result<EthReviewRecord, SignerError> {
+        let raw = export::bytes_from_qr(export::ETH_REQUEST_PREFIX, &qr_text)
+            .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
+        let r = eth_sign::review(&raw, &self.master()?).map_err(eth_err)?;
+        let (p, _) = self.policy(policy, now_ms)?;
+        let pay = eth_payment(&r);
+        p.check(&pay, now_ms).map_err(policy_err)?;
+        Ok(EthReviewRecord {
+            recipient_label: p
+                .label_of(Net::EthSepolia, &pay.recipient)
+                .unwrap_or_default(),
+            network: r.network,
+            from: r.from,
+            recipient: r.recipient,
+            amount_usdt: r.amount_usdt,
+            max_fee_eth: r.max_fee_eth,
+            nonce: r.nonce,
+            signing_hash: r.signing_hash,
+        })
+    }
+
+    /// Sign an Ethereum request, only if it still has the reviewed signing
+    /// hash and the typed characters match the end of the recipient
+    /// (hex, so capitals don't matter). Returns `WES1:` QR text.
+    pub fn sign_eth(
+        &self,
+        qr_text: String,
+        expected_hash: String,
+        typed_last6: String,
+        now_ms: u64,
+        policy: Option<Vec<u8>>,
+    ) -> Result<SignedRecord, SignerError> {
+        let raw = export::bytes_from_qr(export::ETH_REQUEST_PREFIX, &qr_text)
+            .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
+        let master = self.master()?;
+        let review = eth_sign::review(&raw, &master).map_err(eth_err)?;
+        if review.signing_hash != expected_hash {
+            return Err(SignerError::Sign {
+                msg: "the request changed since it was reviewed".into(),
+            });
+        }
+        if !btc_sign::last6_matches(&review.recipient, &typed_last6) {
+            return Err(SignerError::Sign {
+                msg: "the last 6 characters you typed don't match the recipient address. Check your paper address book".into(),
+            });
+        }
+        let (mut p, key) = self.policy(policy, now_ms)?;
+        let receipt = p
+            .record(&eth_payment(&review), &review.signing_hash, now_ms)
+            .map_err(policy_err)?;
+        let (sig, _) = eth_sign::sign(&raw, &master).map_err(eth_err)?;
+        let mut out = sig.to_vec();
+        out.extend_from_slice(&receipt.to_bytes());
+        Ok(SignedRecord {
+            qr_text: export::bytes_to_qr(export::ETH_SIGNATURE_PREFIX, &out)
+                .map_err(|e| SignerError::Export { msg: e.to_string() })?,
+            policy: p.seal(&key),
+            seq: receipt.seq,
+        })
+    }
+
     /// The allowlist, limits and recent signatures. `policy` is the saved
     /// file (None if there is none yet).
     pub fn policy_view(
@@ -752,6 +850,7 @@ pub fn btc_receive_address(public: WalletPublicRecord, index: u32) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chain_eth as chain_eth_addr;
 
     /// Unlock a stored wallet, export its test key, let the PC code build a
     /// payment, review and sign it here, and finalise it on the PC side.
@@ -952,6 +1051,67 @@ mod tests {
             .review_tron(qr, now, Some(policy), vec![])
             .expect_err("limit");
         assert!(e.to_string().contains("daily limit"), "{e}");
+
+        // Ethereum Sepolia: the request the PC builds, reviewed and signed here.
+        let bob: chain_eth_addr::EthAddress = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+            .parse()
+            .expect("bob");
+        let t = eth_tx::Erc20Transfer {
+            chain_id: eth_tx::SEPOLIA_CHAIN_ID,
+            nonce: 3,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 20_000_000_000,
+            gas_limit: 65_000,
+            token: eth_tx::SEPOLIA_USDT.parse().expect("usdt"),
+            recipient: bob,
+            amount: 4_000_000,
+        };
+        let raw = t.encode_unsigned();
+        let qr = export::bytes_to_qr(export::ETH_REQUEST_PREFIX, &raw).expect("qr");
+        assert!(w.review_eth(qr.clone(), now, None).is_err()); // not allowlisted
+        let policy = w
+            .policy_add_address(
+                None,
+                "eth-sepolia".into(),
+                bob.to_checksum(),
+                "Pat".into(),
+                now - 600_000,
+            )
+            .expect("allow");
+        let review = w
+            .review_eth(qr.clone(), now, Some(policy.clone()))
+            .expect("review");
+        assert_eq!(
+            (review.amount_usdt.as_str(), review.recipient_label.as_str()),
+            ("4", "Pat")
+        );
+        assert!(w
+            .sign_eth(
+                qr.clone(),
+                review.signing_hash.clone(),
+                "zzzzzz".into(),
+                now,
+                Some(policy.clone())
+            )
+            .is_err());
+        // Hex: capitals don't matter for the last 6.
+        let signed = w
+            .sign_eth(
+                qr,
+                review.signing_hash.clone(),
+                "caeda94".chars().skip(1).collect::<String>().to_uppercase(),
+                now,
+                Some(policy),
+            )
+            .expect("sign");
+        let answer =
+            export::bytes_from_qr(export::ETH_SIGNATURE_PREFIX, &signed.qr_text).expect("answer");
+        assert_eq!(answer.len(), 65 + 40);
+        let sig: [u8; 65] = answer[..65].try_into().expect("65");
+        assert_eq!(
+            eth_tx::recover_signer(&raw, &sig).map(|a| a.to_checksum()),
+            Ok(w.public().eth)
+        );
     }
 
     fn hex_of(b: &[u8]) -> String {

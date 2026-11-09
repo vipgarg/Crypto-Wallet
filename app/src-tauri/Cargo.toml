@@ -29,6 +29,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 wallet-core = { path = "../../crates/wallet-core" }
 btc-send = { path = "../../crates/btc-send" }
 tron-tx = { path = "../../crates/tron-tx" }
+eth-tx = { path = "../../crates/eth-tx" }
 chain-tron = { path = "../../crates/chain-tron" }
 hex = "0.4"
 watch-export = { path = "../../crates/watch-export" }

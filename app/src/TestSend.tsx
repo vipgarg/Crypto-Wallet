@@ -16,6 +16,7 @@ import { QrCode } from "./Auth";
 import { QrScanner } from "./QrScanner";
 import { ChunkedAddress } from "./Receive";
 import { useBitcoin } from "./settings";
+import { EthTestSend } from "./EthTestSend";
 import type { NileBalances, PreparedTron, TronSent, WalletView } from "./api";
 
 const MAX_QR_TEXT = 6000;
@@ -596,8 +597,8 @@ function TronTestSend() {
 
 export function TestSendPage() {
   const btc = useBitcoin();
-  const [tab, setTab] = useState<"tron" | "btc">("tron");
-  const active = btc ? tab : "tron";
+  const [tab, setTab] = useState<"tron" | "eth" | "btc">("tron");
+  const active = btc || tab !== "btc" ? tab : "tron";
   return (
     <section>
       <h2>Test send</h2>
@@ -609,13 +610,16 @@ export function TestSendPage() {
         <button className={active === "tron" ? "active" : ""} onClick={() => setTab("tron")}>
           USDT on TRON Nile
         </button>
+        <button className={active === "eth" ? "active" : ""} onClick={() => setTab("eth")}>
+          USDT on Ethereum Sepolia
+        </button>
         {btc && (
           <button className={active === "btc" ? "active" : ""} onClick={() => setTab("btc")}>
             Bitcoin signet
           </button>
         )}
       </div>
-      {active === "tron" ? <TronTestSend /> : <BitcoinTestSend />}
+      {active === "tron" ? <TronTestSend /> : active === "eth" ? <EthTestSend /> : <BitcoinTestSend />}
     </section>
   );
 }

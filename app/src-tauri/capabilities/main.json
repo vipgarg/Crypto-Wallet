@@ -36,6 +36,9 @@
     "allow-set-bitcoin-enabled",
     "allow-get-nile-balances",
     "allow-prepare-tron-test-send",
-    "allow-finish-tron-test-send"
+    "allow-finish-tron-test-send",
+    "allow-get-sepolia-balances",
+    "allow-prepare-eth-test-send",
+    "allow-finish-eth-test-send"
   ]
 }

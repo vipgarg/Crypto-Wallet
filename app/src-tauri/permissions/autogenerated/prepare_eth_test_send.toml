@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-prepare-eth-test-send"
+description = "Enables the prepare_eth_test_send command without any pre-configured scope."
+commands.allow = ["prepare_eth_test_send"]
+
+[[permission]]
+identifier = "deny-prepare-eth-test-send"
+description = "Denies the prepare_eth_test_send command without any pre-configured scope."
+commands.deny = ["prepare_eth_test_send"]

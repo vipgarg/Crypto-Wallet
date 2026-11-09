@@ -41,6 +41,7 @@ use wallet_core::{
 use wallet_types::{Network, Tier};
 use zeroize::Zeroizing;
 
+use crate::eth_test;
 use crate::session::{AuthStatus, SessionState, Settings, SetupInfo};
 use crate::testnet::{self, PendingSend, SentView, TestWallet, TestWalletView};
 use crate::tron_test;
@@ -57,6 +58,8 @@ pub struct AppState {
     pub pending_send: Mutex<Option<PendingSend>>,
     /// A TRON (Nile) test payment waiting for the tablet's signature.
     pub pending_tron: Mutex<Option<PendingTron>>,
+    /// An Ethereum (Sepolia) test payment waiting for the tablet's signature.
+    pub pending_eth: Mutex<Option<PendingEth>>,
 }
 
 /// A whole refresh is stopped after this long; whatever hasn't answered by
@@ -1227,6 +1230,158 @@ pub async fn finish_tron_test_send(
 }
 
 // ---------------------------------------------------------------------------
+// Ethereum Sepolia test payments
+// ---------------------------------------------------------------------------
+
+pub struct PendingEth {
+    wallet_id: String,
+    owner: chain_eth::EthAddress,
+    tx: eth_tx::Erc20Transfer,
+}
+
+fn wallet_eth(state: &AppState, id: &str) -> Result<(String, chain_eth::EthAddress), String> {
+    if id.len() > 32 {
+        return Err("Unknown wallet.".into());
+    }
+    let r = read_registry(state)?;
+    let w = r
+        .wallets
+        .iter()
+        .find(|w| w.id.as_str() == id)
+        .ok_or_else(|| "Unknown wallet.".to_owned())?;
+    let a = w
+        .eth
+        .ok_or_else(|| "This wallet has no Ethereum address.".to_owned())?;
+    Ok((w.id.to_string(), a))
+}
+
+/// Sepolia test balances (ETH and test USDT) of a wallet's Ethereum address.
+#[tauri::command]
+pub async fn get_sepolia_balances(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<eth_test::SepoliaBalances, String> {
+    let (_, addr) = wallet_eth(&state, &id)?;
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        eth_test::balances(&state.http, &state.config, &addr),
+    )
+    .await
+    .map_err(|_| "The Sepolia nodes didn't answer in time.".to_owned())?
+}
+
+#[derive(Serialize)]
+pub struct PreparedEth {
+    recipient: String,
+    amount: String,
+    nonce: u64,
+    /// Likely and worst-case network fee, in test ETH.
+    likely_fee_eth: String,
+    max_fee_eth: String,
+    /// Start of the signing hash (the tablet shows the same).
+    request_id: String,
+    qr_text: String,
+    qr_size: usize,
+    qr_modules: Vec<bool>,
+}
+
+/// Build a Sepolia test USDT transfer locally and show it as a QR code.
+#[tauri::command]
+pub async fn prepare_eth_test_send(
+    state: State<'_, AppState>,
+    id: String,
+    recipient: String,
+    amount: String,
+) -> Result<PreparedEth, String> {
+    let (wallet_id, owner) = wallet_eth(&state, &id)?;
+    let to: chain_eth::EthAddress = recipient
+        .trim()
+        .parse()
+        .map_err(|e: chain_eth::EthAddressError| format!("Recipient: {e}"))?;
+    if to == owner {
+        return Err("The recipient is this wallet itself.".into());
+    }
+    let amount_units = tron_test::parse_usdt(&amount)?;
+    let b = tokio::time::timeout(
+        Duration::from_secs(45),
+        eth_test::build(&state.http, &state.config, owner, to, amount_units),
+    )
+    .await
+    .map_err(|_| "The Sepolia nodes didn't answer in time.".to_owned())??;
+    let unsigned = b.tx.encode_unsigned();
+    let qr_text = watch_export::bytes_to_qr(watch_export::ETH_REQUEST_PREFIX, &unsigned)
+        .map_err(|e| e.to_string())?;
+    let qr = crate::qr::matrix_large(&qr_text)?;
+    let request_id = hex::encode(eth_tx::signing_hash(&unsigned));
+    let nonce = b.tx.nonce;
+    *state.pending_eth.lock().map_err(|_| LOCK_ERR.to_owned())? = Some(PendingEth {
+        wallet_id,
+        owner,
+        tx: b.tx,
+    });
+    Ok(PreparedEth {
+        recipient: to.to_checksum(),
+        amount: amount.trim().to_owned(),
+        nonce,
+        likely_fee_eth: eth_test::decimal(b.likely_fee_wei, 18),
+        max_fee_eth: eth_test::decimal(b.max_fee_wei, 18),
+        request_id,
+        qr_text,
+        qr_size: qr.size,
+        qr_modules: qr.modules,
+    })
+}
+
+/// Take the tablet's signature (WES1 QR), check it against the transaction
+/// built here, and send it to the Sepolia nodes.
+#[tauri::command]
+pub async fn finish_eth_test_send(
+    state: State<'_, AppState>,
+    signed_qr: String,
+) -> Result<eth_test::EthSent, String> {
+    state.session.with_test_wallets(false, |_| Ok(()))?;
+    let answer = watch_export::bytes_from_qr(watch_export::ETH_SIGNATURE_PREFIX, &signed_qr)
+        .map_err(|_| {
+            "That isn't an Ethereum signature from the tablet (or it was scanned wrongly)."
+                .to_owned()
+        })?;
+    let (tx, owner, wallet_id) = {
+        let p = state.pending_eth.lock().map_err(|_| LOCK_ERR.to_owned())?;
+        let p = p.as_ref().ok_or_else(|| {
+            "No Ethereum payment is waiting for a signature. Build it again.".to_owned()
+        })?;
+        (p.tx.clone(), p.owner, p.wallet_id.clone())
+    };
+    let (signed, r) = eth_test::finalize(&tx, &owner, &answer)?;
+    let mut sent = tokio::time::timeout(
+        Duration::from_secs(45),
+        eth_test::broadcast(&state.http, &state.config, &signed),
+    )
+    .await
+    .map_err(|_| "The Sepolia nodes didn't answer in time.".to_owned())??;
+    *state.pending_eth.lock().map_err(|_| LOCK_ERR.to_owned())? = None;
+    let head = hex::encode(r.head);
+    let previous = state.session.record_tablet_receipt(
+        &wallet_id,
+        crate::session::TabletReceipt {
+            seq: r.seq,
+            head: head.clone(),
+        },
+    )?;
+    sent.log_note = tron_test::receipt_note(previous.map(|p| p.seq), r.seq);
+    state.session.audit().record(
+        Event::TestPaymentSent,
+        &format!(
+            "{wallet_id} (Ethereum Sepolia), transaction {}, tablet log #{} head {}",
+            sent.txid.chars().take(10).collect::<String>(),
+            r.seq,
+            &head[..8]
+        ),
+    );
+    Ok(sent)
+}
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 
@@ -1712,7 +1867,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            32,
+            35,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

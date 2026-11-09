@@ -17,12 +17,14 @@ chain-tron = { path = "../chain-tron" }
 qrcode = { version = "0.14", default-features = false }
 signer-core = { path = "../signer-core" }
 tron-tx = { path = "../tron-tx" }
+eth-tx = { path = "../eth-tx" }
 thiserror = "2"
 uniffi = { version = "=0.29.5" }
 wallet-types = { path = "../wallet-types" }
 zeroize = "1"
 
 [dev-dependencies]
+chain-eth = { path = "../chain-eth" }
 btc-send = { path = "../btc-send" }
 
 [lints]

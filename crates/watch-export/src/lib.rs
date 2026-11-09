@@ -198,6 +198,11 @@ pub const TRON_REQUEST_PREFIX: &str = "WTR1:";
 /// TRON signature from the tablet: 32-byte txid followed by the 65-byte
 /// signature.
 pub const TRON_SIGNATURE_PREFIX: &str = "WTS1:";
+/// Ethereum payment request from the PC (unsigned EIP-1559 transaction).
+pub const ETH_REQUEST_PREFIX: &str = "WER1:";
+/// Ethereum signature from the tablet: r ‖ s ‖ y_parity (65 bytes), then
+/// the signing-log receipt (8-byte number ‖ 32-byte head).
+pub const ETH_SIGNATURE_PREFIX: &str = "WES1:";
 
 /// Generic QR envelope: `prefix` + base64(bytes) + `#` + first 8 hex of
 /// SHA-256(bytes). The checksum catches scanning errors only.

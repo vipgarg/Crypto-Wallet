@@ -4,8 +4,8 @@
 
 pub use watch_export::{
     bytes_from_qr, bytes_to_qr, decode, decode_test, encode, encode_test, psbt_from_qr, psbt_to_qr,
-    ExportError, TestExport, WatchOnlyExport, PREFIX, PSBT_PREFIX, TEST_PREFIX,
-    TRON_REQUEST_PREFIX, TRON_SIGNATURE_PREFIX,
+    ExportError, TestExport, WatchOnlyExport, ETH_REQUEST_PREFIX, ETH_SIGNATURE_PREFIX, PREFIX,
+    PSBT_PREFIX, TEST_PREFIX, TRON_REQUEST_PREFIX, TRON_SIGNATURE_PREFIX,
 };
 
 #[cfg(test)]

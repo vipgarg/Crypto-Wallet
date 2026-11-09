@@ -30,6 +30,11 @@ usdt_trc20 = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 # wallet-cli token list for Nile ("official", 6 decimals). Also compiled
 # into the tablet app, which signs only this contract in the test build.
 usdt_trc20_nile = "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"
+# Ethereum Sepolia TEST network USDT (no value; Phase 2 testing only). Aave V3
+# Sepolia market USDT_UNDERLYING, 6 decimals (bgd-labs/aave-address-book,
+# AaveV3Sepolia.sol). Also compiled into the tablet app, which signs only
+# this contract on chain id 11155111 in the test build.
+usdt_erc20_sepolia = "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0"
 
 [[providers]]
 id = "mempool-space"
@@ -133,3 +138,19 @@ operator = "Emzy (independent mempool instance)"
 id = "trongrid-nile"
 base_url = "https://nile.trongrid.io"
 operator = "TronGrid (TRON DAO)"
+
+# ---------------------------------------------------------------------------
+# ETHEREUM SEPOLIA: a public TEST network whose coins have no value. Phase 2
+# testing only. The Sepolia endpoints of the same operators as the mainnet
+# Ethereum providers above. Confirm on your PC that they answer (like the
+# mainnet ones). The nonce and fees come from the first one that answers;
+# the signed transaction is sent to all of them.
+[[sepolia_providers]]
+id = "publicnode-sepolia"
+base_url = "https://ethereum-sepolia-rpc.publicnode.com"
+operator = "PublicNode (Allnodes)"
+
+[[sepolia_providers]]
+id = "drpc-sepolia"
+base_url = "https://sepolia.drpc.org"
+operator = "dRPC"
