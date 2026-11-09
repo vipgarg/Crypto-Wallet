@@ -29,6 +29,10 @@ Sources: Nile node `nile.trongrid.io` and the Nile USDT contract are taken from 
 - PC: build from a block, signature from another key / for another transaction / truncated → refused; broadcast success and a hex-encoded refusal message.
 - Through the tablet bridge: unlock → review → lowercase last-6 refused → sign → PC-side recovery gives the wallet's address.
 
+## Owner test
+
+2026-11-09: test USDT payments from two test wallets signed on the tablet and confirmed on nile.tronscan.org. A sender address that had received only USDT failed with "account does not exist" (TRON accounts are activated by receiving TRX); the PC now checks the sender before building and explains it.
+
 ## Not yet
 
 - A second independent Nile node (only TronGrid is known).
