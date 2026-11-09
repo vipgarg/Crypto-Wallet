@@ -11,6 +11,7 @@
 //! secret is stored inside the encrypted file, so it adds no encryption
 //! strength. No keys exist on this PC, so none of this protects funds.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -50,6 +51,18 @@ struct StoreContents {
     /// User settings. Added later.
     #[serde(default)]
     settings: Settings,
+    /// The last signing-log receipt from the tablet, per wallet. Added later.
+    #[serde(default)]
+    tablet_receipts: BTreeMap<String, TabletReceipt>,
+}
+
+/// The tablet's signing-log position after its latest signature for a
+/// wallet: its number and the log's head hash (hex).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TabletReceipt {
+    pub seq: u64,
+    pub head: String,
 }
 
 fn yes() -> bool {
@@ -79,6 +92,7 @@ struct Unlocked {
     address_book: AddressBook,
     test_wallets: Vec<TestWallet>,
     settings: Settings,
+    tablet_receipts: BTreeMap<String, TabletReceipt>,
     key: Zeroizing<[u8; 32]>,
     kdf: KdfParams,
     totp_secret: Zeroizing<Vec<u8>>,
@@ -232,6 +246,7 @@ impl SessionState {
             address_book: AddressBook::default(),
             test_wallets: Vec::new(),
             settings: Settings::default(),
+            tablet_receipts: BTreeMap::new(),
             key,
             kdf,
             totp_secret: secret,
@@ -264,6 +279,7 @@ impl SessionState {
             address_book: u.address_book.clone(),
             test_wallets: u.test_wallets.clone(),
             settings: u.settings,
+            tablet_receipts: u.tablet_receipts.clone(),
         };
         let bytes = store::seal(&u.key, &u.kdf, &contents).map_err(|e| e.to_string())?;
         store::write_atomic(&self.paths.store, &bytes).map_err(|e| e.to_string())
@@ -319,6 +335,7 @@ impl SessionState {
             address_book: contents.address_book,
             test_wallets: contents.test_wallets,
             settings: contents.settings,
+            tablet_receipts: contents.tablet_receipts,
             key,
             kdf,
             totp_secret: secret,
@@ -414,6 +431,27 @@ impl SessionState {
             return Err(e);
         }
         Ok(u.settings)
+    }
+
+    /// Save the tablet's receipt for a wallet. Returns the previous one.
+    pub fn record_tablet_receipt(
+        &self,
+        wallet_id: &str,
+        receipt: TabletReceipt,
+    ) -> Result<Option<TabletReceipt>, String> {
+        let mut s = self.inner.lock().map_err(|_| INTERNAL.to_owned())?;
+        let Session::Unlocked(u) = &mut *s else {
+            return Err(LOCKED_MSG.into());
+        };
+        let previous = u.tablet_receipts.insert(wallet_id.to_owned(), receipt);
+        if let Err(e) = self.persist(u) {
+            match previous.clone() {
+                Some(p) => u.tablet_receipts.insert(wallet_id.to_owned(), p),
+                None => u.tablet_receipts.remove(wallet_id),
+            };
+            return Err(e);
+        }
+        Ok(previous)
     }
 
     /// Run `f` on the test wallets if unlocked. With `save`, the change is

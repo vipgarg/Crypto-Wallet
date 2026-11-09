@@ -525,6 +525,7 @@ function TronTestSend() {
           <p className="hint">
             See it in your browser: <span className="mono">{step.sent.explorer_url}</span>
           </p>
+          {step.sent.log_note && <p className="warning">{step.sent.log_note}</p>}
           <button
             onClick={() => {
               setStep({ kind: "form" });

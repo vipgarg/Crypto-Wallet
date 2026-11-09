@@ -71,6 +71,12 @@ Wallet → **Test network (signet)** (Spending/Savings wallets): unlock with the
 | Tamper check (verified boot) | Start-up check (critical): the secure hardware creates a throw-away key with a fresh challenge; the certificate chain must verify up to one of Google's pinned attestation roots (RSA root and "Key Attestation CA1", from github.com/android/keyattestation `roots.json`); the Rust core reads the root of trust: bootloader **locked** and verified boot **Verified** are required. Tested against real attestations from Google's test data (a locked Pixel passes, an unlocked one fails). Limit: attestation-key revocation can't be checked offline. |
 | Fixed signing key | When the repository has the secrets `SIGNER_KEYSTORE_B64`, `SIGNER_KEYSTORE_PASSWORD` and `SIGNER_KEY_ALIAS`, CI builds a **release** APK (not debuggable) signed with that key, so updates install with `adb install -r` and keep the wallets. Without them, a debug build as before. Still to do once the key exists: the app checks its own signing-certificate fingerprint at start. |
 
+## Allowlist, limits and signing log
+
+Test networks → (unlock) → **Allowlist, limits and signing log**. The tablet signs only to addresses on this wallet's own list, after a waiting period (10 minutes on test networks, 24 hours on real ones), and only up to the daily limits, whatever the PC asks. Type addresses from the paper address book or scan them from the recipient's own device, never from the PC. Every signature is logged (hash-chained) before it is shown, and its log number goes to the PC, which warns if numbers were skipped. Details: docs/phase2-tron-testnet.md.
+
+**After updating the app:** add your test recipients to the allowlist and wait 10 minutes before the next test payment.
+
 ## Restore: confirm the fingerprint
 
 After a restore (and the passphrase, for Savings/Vault), the tablet shows the wallet's **fingerprint** and its TRON and Ethereum addresses and asks whether they match your paper or the PC's Wallets page. A mistyped passphrase (typed the same way twice) is otherwise silently accepted and opens a different, empty wallet. "Doesn't match" goes back to the passphrase (or the words). Write each wallet's fingerprint on its paper when you create it.

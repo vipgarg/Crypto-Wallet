@@ -29,6 +29,7 @@ data class WalletEntry(
  * App-private storage (never backed up or transferred):
  * - wallets/<id>.json: public record
  * - wallets/<id>.vault: encrypted seed (Spending and Savings only)
+ * - wallets/<id>.policy: allowlist, limits and signing log (sealed)
  */
 class WalletStore(filesDir: File) {
     private val dir = File(filesDir, "wallets").apply { mkdirs() }
@@ -56,6 +57,18 @@ class WalletStore(filesDir: File) {
     }
 
     fun vault(id: String): ByteArray? = File(dir, "$id.vault").takeIf { it.exists() }?.readBytes()
+
+    /**
+     * The wallet's signing policy (allowlist, limits, signing log), sealed
+     * by Rust with a key from the seed; null before the first change.
+     */
+    fun policy(id: String): ByteArray? = File(dir, "$id.policy").takeIf { it.exists() }?.readBytes()
+
+    fun savePolicy(id: String, bytes: ByteArray) = atomicWrite(File(dir, "$id.policy"), bytes)
+
+    fun deletePolicy(id: String) {
+        File(dir, "$id.policy").delete()
+    }
 
     private fun parse(o: JSONObject) = WalletEntry(
         id = o.getString("id"),

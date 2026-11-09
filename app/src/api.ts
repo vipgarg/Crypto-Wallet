@@ -202,6 +202,8 @@ export interface PreparedTron {
 export interface TronSent {
   txid: string;
   explorer_url: string;
+  /** A warning when the tablet's signing log shows signatures this PC didn't see. */
+  log_note: string;
 }
 
 export interface Settings {

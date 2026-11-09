@@ -37,10 +37,11 @@ private sealed interface TestStep {
     data class ShowExport(val text: String) : TestStep
     data object Scan : TestStep
     data class Review(val request: String, val review: BtcReviewRecord) : TestStep
-    data class Signed(val text: String, val review: BtcReviewRecord) : TestStep
+    data class Signed(val text: String, val review: BtcReviewRecord, val seq: ULong) : TestStep
     data object TronScan : TestStep
     data class TronReview(val request: String, val review: TronReviewRecord) : TestStep
-    data class TronSigned(val text: String, val review: TronReviewRecord) : TestStep
+    data class TronSigned(val text: String, val review: TronReviewRecord, val seq: ULong) : TestStep
+    data object Policy : TestStep
 }
 
 private fun sats(v: ULong): String {
@@ -119,6 +120,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
             }) { Text("Show test export QR (for the PC)") }
             Button(onClick = { error = null; step = TestStep.TronScan }) { Text("Sign a TRON test payment (Nile USDT)") }
             OutlinedButton(onClick = { error = null; step = TestStep.Scan }) { Text("Sign a Bitcoin test payment (signet)") }
+            OutlinedButton(onClick = { error = null; step = TestStep.Policy }) { Text("Allowlist, limits and signing log") }
             OutlinedButton(onClick = onBack) { Text("Lock and go back") }
         }
 
@@ -136,7 +138,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                 onResult = { text ->
                     busy = "Checking the payment…"
                     scope.launch {
-                        val r = withContext(Dispatchers.Default) { runCatching { w.reviewBtc(text) } }
+                        val r = withContext(Dispatchers.Default) { runCatching { w.reviewBtc(text, now(), store.policy(entry.id)) } }
                         busy = null
                         r.onSuccess { step = TestStep.Review(text, it) }
                             .onFailure { error = it.message; step = TestStep.Menu }
@@ -153,7 +155,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(r.network)
-                    Text("Recipient", fontWeight = FontWeight.SemiBold)
+                    Text("Recipient: \"${r.recipientLabel}\" (on this tablet's allowlist)", fontWeight = FontWeight.SemiBold)
                     GroupedAddress(r.recipient)
                     Text("Amount: ${sats(r.amountSats)}", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                     Text("Fee: ${sats(r.feeSats)} (about ${r.feeRate} sat/vB)")
@@ -182,10 +184,15 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     busy = "Signing…"
                     scope.launch {
                         val res = withContext(Dispatchers.Default) {
-                            runCatching { w.signBtc(s.request, r.txid, typed) }
+                            runCatching {
+                                val signed = w.signBtc(s.request, r.txid, typed, now(), store.policy(entry.id))
+                                // The log entry is saved before the signature is shown.
+                                store.savePolicy(entry.id, signed.policy)
+                                signed
+                            }
                         }
                         busy = null
-                        res.onSuccess { step = TestStep.Signed(it, r) }
+                        res.onSuccess { step = TestStep.Signed(it.qrText, r, it.seq) }
                             .onFailure { error = it.message }
                     }
                 }) { Text("Approve and sign") }
@@ -201,7 +208,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     busy = "Checking the payment…"
                     scope.launch {
                         val r = withContext(Dispatchers.Default) {
-                            runCatching { w.reviewTron(text, System.currentTimeMillis().toULong()) }
+                            runCatching { w.reviewTron(text, now(), store.policy(entry.id)) }
                         }
                         busy = null
                         r.onSuccess { step = TestStep.TronReview(text, it) }
@@ -220,7 +227,7 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(r.network)
                     Text("Token: test USDT (TRC-20)")
-                    Text("Recipient", fontWeight = FontWeight.SemiBold)
+                    Text("Recipient: \"${r.recipientLabel}\" (on this tablet's allowlist)", fontWeight = FontWeight.SemiBold)
                     GroupedAddress(r.recipient)
                     Text("Amount: ${r.amountUsdt} test USDT", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                     Text("Fee limit: up to ${r.feeLimitTrx} test TRX")
@@ -245,10 +252,15 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
                     busy = "Signing…"
                     scope.launch {
                         val res = withContext(Dispatchers.Default) {
-                            runCatching { w.signTron(s.request, r.txid, typed, System.currentTimeMillis().toULong()) }
+                            runCatching {
+                                val signed = w.signTron(s.request, r.txid, typed, now(), store.policy(entry.id))
+                                // The log entry is saved before the signature is shown.
+                                store.savePolicy(entry.id, signed.policy)
+                                signed
+                            }
                         }
                         busy = null
-                        res.onSuccess { step = TestStep.TronSigned(it, r) }
+                        res.onSuccess { step = TestStep.TronSigned(it.qrText, r, it.seq) }
                             .onFailure { error = it.message }
                     }
                 }) { Text("Approve and sign") }
@@ -257,14 +269,16 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
 
         is TestStep.TronSigned -> {
             Text("Signed", fontWeight = FontWeight.SemiBold, color = OK)
-            Hint("On the PC: Scan the signed QR from the tablet. Transaction ID starts with ${s.review.txid.take(8)}.")
+            Hint("On the PC: Scan the signed QR from the tablet. Transaction ID starts with ${s.review.txid.take(8)}. Signature #${s.seq} in this tablet's signing log.")
             QrImage(s.text)
             OutlinedButton(onClick = { step = TestStep.Menu }) { Text("Done") }
         }
 
+        TestStep.Policy -> PolicyScreen(w, entry, store, onBack = { step = TestStep.Menu })
+
         is TestStep.Signed -> {
             Text("Signed", fontWeight = FontWeight.SemiBold, color = OK)
-            Hint("On the PC: Scan the signed QR from the tablet. Transaction ID starts with ${s.review.txid.take(8)}.")
+            Hint("On the PC: Scan the signed QR from the tablet. Transaction ID starts with ${s.review.txid.take(8)}. Signature #${s.seq} in this tablet's signing log.")
             QrImage(s.text)
             OutlinedButton(onClick = { step = TestStep.Menu }) { Text("Done") }
         }

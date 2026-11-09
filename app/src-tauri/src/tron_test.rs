@@ -206,12 +206,36 @@ pub async fn build<H: HttpClient>(
     })
 }
 
-/// Check the tablet's answer (32-byte txid ‖ 65-byte signature) against
-/// the raw transaction built here; returns the signed transaction bytes.
-pub fn finalize(raw: &[u8], owner: &TronAddress, answer: &[u8]) -> Result<Vec<u8>, String> {
-    if answer.len() != 97 {
-        return Err("That isn't a TRON signature from the tablet.".into());
-    }
+/// The tablet's signing-log receipt sent with a signature: the
+/// signature's number in its log and the log's head hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Receipt {
+    pub seq: u64,
+    pub head: [u8; 32],
+}
+
+/// Check the tablet's answer (32-byte txid ‖ 65-byte signature, then from
+/// tablets with a signing log: 8-byte log number ‖ 32-byte log head)
+/// against the raw transaction built here; returns the signed transaction
+/// bytes and the receipt.
+pub fn finalize(
+    raw: &[u8],
+    owner: &TronAddress,
+    answer: &[u8],
+) -> Result<(Vec<u8>, Option<Receipt>), String> {
+    let receipt = match answer.len() {
+        97 => None,
+        137 => Some(Receipt {
+            seq: u64::from_be_bytes(
+                answer[97..105]
+                    .try_into()
+                    .map_err(|_| "Malformed receipt.")?,
+            ),
+            head: answer[105..].try_into().map_err(|_| "Malformed receipt.")?,
+        }),
+        _ => return Err("That isn't a TRON signature from the tablet.".into()),
+    };
+    let answer = &answer[..97];
     if answer[..32] != tron_tx::txid(raw) {
         return Err("The signature is for a different transaction. Build the payment again and scan the new QR on the tablet.".into());
     }
@@ -219,7 +243,7 @@ pub fn finalize(raw: &[u8], owner: &TronAddress, answer: &[u8]) -> Result<Vec<u8
         .try_into()
         .map_err(|_| "Malformed signature.".to_owned())?;
     match tron_tx::recover_signer(raw, &sig) {
-        Ok(a) if a == *owner => Ok(tron_tx::signed_transaction(raw, &sig)),
+        Ok(a) if a == *owner => Ok((tron_tx::signed_transaction(raw, &sig), receipt)),
         Ok(_) => Err("The signature isn't from this wallet's TRON key.".into()),
         Err(_) => Err("The signature is invalid.".into()),
     }
@@ -229,6 +253,29 @@ pub fn finalize(raw: &[u8], owner: &TronAddress, answer: &[u8]) -> Result<Vec<u8
 pub struct TronSent {
     pub txid: String,
     pub explorer_url: String,
+    /// About the tablet's signing log (a warning if it signed something
+    /// this PC didn't see); empty when there's nothing to say.
+    pub log_note: String,
+}
+
+/// Compare a new receipt with the previous one for the same wallet.
+/// Returns a warning when the tablet signed more than this PC saw.
+pub fn receipt_note(previous: Option<u64>, now: u64) -> String {
+    match previous {
+        Some(p) if now == p + 1 => String::new(),
+        Some(p) if now > p + 1 => format!(
+            "Warning: the tablet's signing log is at #{now}, but the last signature this PC saw was #{p}. \
+             The tablet signed {} payment(s) this PC didn't send (for example ones you cancelled, or sent \
+             from another PC). If you don't know of any, check the log on the tablet (Signing log) and \
+             follow the incident runbook.",
+            now - p - 1
+        ),
+        Some(p) => format!(
+            "Warning: the tablet's signing log went back (#{now} after #{p}). Its policy may have been reset \
+             or restored from an older copy. Check the tablet."
+        ),
+        None => String::new(),
+    }
 }
 
 /// Broadcast with `/wallet/broadcasthex`.
@@ -251,6 +298,7 @@ pub async fn broadcast<H: HttpClient>(
         return Ok(TronSent {
             explorer_url: format!("https://nile.tronscan.org/#/transaction/{txid}"),
             txid,
+            log_note: String::new(),
         });
     }
     // Errors carry a code and a message that is sometimes hex-encoded text.
@@ -281,6 +329,14 @@ mod tests {
             c.usdt_trc20_nile.map(|a| a.to_base58()).as_deref(),
             Some(tron_tx::NILE_USDT)
         );
+    }
+
+    #[test]
+    fn receipts_reveal_signatures_the_pc_did_not_see() {
+        assert_eq!(receipt_note(None, 5), "");
+        assert_eq!(receipt_note(Some(4), 5), "");
+        assert!(receipt_note(Some(2), 5).contains("signed 2 payment(s)"));
+        assert!(receipt_note(Some(5), 5).contains("went back"));
     }
 
     #[test]
@@ -357,7 +413,22 @@ mod tests {
         let sig = tron_tx::sign(&raw, &sk);
         let mut answer = tron_tx::txid(&raw).to_vec();
         answer.extend_from_slice(&sig);
-        let signed = finalize(&raw, &owner, &answer).expect("finalize");
+        let (signed, receipt) = finalize(&raw, &owner, &answer).expect("finalize");
+        assert_eq!(receipt, None);
+        // From a tablet with a signing log: the receipt comes along.
+        let mut with_log = answer.clone();
+        with_log.extend_from_slice(&7u64.to_be_bytes());
+        with_log.extend_from_slice(&[0xab; 32]);
+        let (signed2, receipt) = finalize(&raw, &owner, &with_log).expect("finalize");
+        assert_eq!(signed2, signed);
+        assert_eq!(
+            receipt,
+            Some(Receipt {
+                seq: 7,
+                head: [0xab; 32]
+            })
+        );
+        assert!(finalize(&raw, &owner, &with_log[..120]).is_err());
 
         // Wrong wallet, other transaction, garbage: refused.
         let other_sk = secp256k1::SecretKey::from_slice(&[6u8; 32]).expect("sk2");

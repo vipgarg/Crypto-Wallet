@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use signer_core::policy::{self, Asset, Net, Payment, Policy, PolicyError};
 use signer_core::{accounts, attestation, btc_sign, entropy, export, seed, tron_sign, vault};
 use wallet_types::{Tier, WalletId};
 use zeroize::Zeroizing;
@@ -36,6 +37,13 @@ pub enum SignerError {
 
 fn sign_err(e: btc_sign::SignError) -> SignerError {
     SignerError::Sign { msg: e.to_string() }
+}
+
+fn policy_err(e: PolicyError) -> SignerError {
+    match e {
+        PolicyError::Invalid(msg) => SignerError::Input { msg },
+        e => SignerError::Sign { msg: e.to_string() },
+    }
 }
 
 fn seed_err(e: seed::SeedError) -> SignerError {
@@ -207,6 +215,135 @@ impl UnlockedWallet {
         };
         self.inner.seed.master(pass).map_err(seed_err)
     }
+
+    /// Open this wallet's signing policy (sealed with a key from its seed).
+    fn policy(
+        &self,
+        bytes: Option<Vec<u8>>,
+        now_ms: u64,
+    ) -> Result<(Policy, [u8; 32]), SignerError> {
+        let key = policy::mac_key(&self.master()?);
+        let p = Policy::open(bytes.as_deref(), &key, &self.inner.id.to_string(), now_ms)
+            .map_err(policy_err)?;
+        Ok((p, key))
+    }
+}
+
+/// A signature to show to the PC, plus the updated policy file. The app
+/// must save `policy` before it shows `qr_text`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SignedRecord {
+    pub qr_text: String,
+    pub policy: Vec<u8>,
+    /// This signature's number in the tablet's signing log.
+    pub seq: u64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AllowedAddressRecord {
+    pub net: String,
+    pub net_name: String,
+    pub address: String,
+    pub label: String,
+    /// 0 when usable; otherwise when it becomes usable (tablet clock, ms).
+    pub usable_from_ms: u64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct LimitRecord {
+    pub asset: String,
+    pub name: String,
+    pub unit: String,
+    pub daily: String,
+    /// Signed in the last 24 hours.
+    pub used_day: String,
+    pub pending: Option<String>,
+    pub pending_from_ms: u64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct LogRecord {
+    pub seq: u64,
+    pub time_ms: u64,
+    pub asset: String,
+    pub recipient: String,
+    pub amount: String,
+    pub unit: String,
+    pub txid: String,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PolicyRecord {
+    pub addresses: Vec<AllowedAddressRecord>,
+    pub limits: Vec<LimitRecord>,
+    /// Newest first (at most 50).
+    pub recent: Vec<LogRecord>,
+    pub signed_total: u64,
+    pub head: String,
+}
+
+impl From<policy::PolicyView> for PolicyRecord {
+    fn from(v: policy::PolicyView) -> Self {
+        Self {
+            addresses: v
+                .addresses
+                .into_iter()
+                .map(|a| AllowedAddressRecord {
+                    net: a.net,
+                    net_name: a.net_name,
+                    address: a.address,
+                    label: a.label,
+                    usable_from_ms: a.usable_from_ms,
+                })
+                .collect(),
+            limits: v
+                .limits
+                .into_iter()
+                .map(|l| LimitRecord {
+                    asset: l.asset,
+                    name: l.name,
+                    unit: l.unit,
+                    daily: l.daily,
+                    used_day: l.used_24h,
+                    pending: l.pending,
+                    pending_from_ms: l.pending_from_ms,
+                })
+                .collect(),
+            recent: v
+                .recent
+                .into_iter()
+                .map(|e| LogRecord {
+                    seq: e.seq,
+                    time_ms: e.time_ms,
+                    asset: e.asset,
+                    recipient: e.recipient,
+                    amount: e.amount,
+                    unit: e.unit,
+                    txid: e.txid,
+                })
+                .collect(),
+            signed_total: v.signed_total,
+            head: v.head,
+        }
+    }
+}
+
+/// A network the allowlist can hold addresses for.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct NetRecord {
+    pub code: String,
+    pub name: String,
+}
+
+#[uniffi::export]
+pub fn policy_networks() -> Vec<NetRecord> {
+    Net::ALL
+        .into_iter()
+        .map(|n| NetRecord {
+            code: n.code().into(),
+            name: n.name().into(),
+        })
+        .collect()
 }
 
 /// What the tablet shows before you approve a Bitcoin test payment.
@@ -221,6 +358,8 @@ pub struct BtcReviewRecord {
     pub fee_rate: u64,
     pub inputs: u32,
     pub txid: String,
+    /// The recipient's name on this tablet's allowlist.
+    pub recipient_label: String,
 }
 
 /// What the tablet shows before you approve a TRON (Nile) test payment.
@@ -232,6 +371,8 @@ pub struct TronReviewRecord {
     pub amount_usdt: String,
     pub fee_limit_trx: String,
     pub txid: String,
+    /// The recipient's name on this tablet's allowlist.
+    pub recipient_label: String,
 }
 
 impl From<tron_sign::TronReview> for TronReviewRecord {
@@ -243,6 +384,7 @@ impl From<tron_sign::TronReview> for TronReviewRecord {
             amount_usdt: r.amount_usdt,
             fee_limit_trx: r.fee_limit_trx,
             txid: r.txid,
+            recipient_label: String::new(),
         }
     }
 }
@@ -263,6 +405,7 @@ impl From<btc_sign::Review> for BtcReviewRecord {
             fee_rate: r.fee_rate,
             inputs: u32::try_from(r.inputs).unwrap_or(u32::MAX),
             txid: r.txid,
+            recipient_label: String::new(),
         }
     }
 }
@@ -308,27 +451,47 @@ impl UnlockedWallet {
 
     /// Check a payment request scanned from the PC (`WPS1:` QR text) and
     /// return what it does. Nothing is signed.
-    pub fn review_btc(&self, qr_text: String) -> Result<BtcReviewRecord, SignerError> {
+    /// The tablet's allowlist and daily limit are checked too.
+    pub fn review_btc(
+        &self,
+        qr_text: String,
+        now_ms: u64,
+        policy: Option<Vec<u8>>,
+    ) -> Result<BtcReviewRecord, SignerError> {
         let bytes =
             export::psbt_from_qr(&qr_text).map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let psbt = btc_sign::parse(&bytes).map_err(sign_err)?;
-        Ok(btc_sign::review(&psbt, &self.master()?)
-            .map_err(sign_err)?
-            .into())
+        let r = btc_sign::review(&psbt, &self.master()?).map_err(sign_err)?;
+        let (p, _) = self.policy(policy, now_ms)?;
+        let pay = btc_payment(&r);
+        p.check(&pay, now_ms).map_err(policy_err)?;
+        let mut out: BtcReviewRecord = r.into();
+        out.recipient_label = p
+            .label_of(Net::BtcSignet, &pay.recipient)
+            .unwrap_or_default();
+        Ok(out)
     }
 
     /// Check a TRON payment request scanned from the PC (`WTR1:` QR text).
     /// `now_ms` is this tablet's clock. Nothing is signed.
+    /// The tablet's allowlist and daily limit are checked too.
     pub fn review_tron(
         &self,
         qr_text: String,
         now_ms: u64,
+        policy: Option<Vec<u8>>,
     ) -> Result<TronReviewRecord, SignerError> {
         let raw = export::bytes_from_qr(export::TRON_REQUEST_PREFIX, &qr_text)
             .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
-        Ok(tron_sign::review(&raw, &self.master()?, now_ms)
-            .map_err(tron_err)?
-            .into())
+        let r = tron_sign::review(&raw, &self.master()?, now_ms).map_err(tron_err)?;
+        let (p, _) = self.policy(policy, now_ms)?;
+        let pay = tron_payment(&raw)?;
+        p.check(&pay, now_ms).map_err(policy_err)?;
+        let mut out: TronReviewRecord = r.into();
+        out.recipient_label = p
+            .label_of(Net::TronNile, &pay.recipient)
+            .unwrap_or_default();
+        Ok(out)
     }
 
     /// Sign a TRON request, only if it still has the reviewed transaction ID
@@ -340,7 +503,8 @@ impl UnlockedWallet {
         expected_txid: String,
         typed_last6: String,
         now_ms: u64,
-    ) -> Result<String, SignerError> {
+        policy: Option<Vec<u8>>,
+    ) -> Result<SignedRecord, SignerError> {
         let raw = export::bytes_from_qr(export::TRON_REQUEST_PREFIX, &qr_text)
             .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let master = self.master()?;
@@ -362,11 +526,21 @@ impl UnlockedWallet {
                 msg: "the last 6 characters you typed don't match the recipient address (TRON addresses are case-sensitive). Check your paper address book".into(),
             });
         }
+        let (mut p, key) = self.policy(policy, now_ms)?;
+        let receipt = p
+            .record(&tron_payment(&raw)?, &review.txid, now_ms)
+            .map_err(policy_err)?;
         let (sig, _) = tron_sign::sign(&raw, &master, now_ms).map_err(tron_err)?;
+        // txid (32) ‖ signature (65) ‖ receipt: log number (8) ‖ log head (32).
         let mut out = tron_tx::txid(&raw).to_vec();
         out.extend_from_slice(&sig);
-        export::bytes_to_qr(export::TRON_SIGNATURE_PREFIX, &out)
-            .map_err(|e| SignerError::Export { msg: e.to_string() })
+        out.extend_from_slice(&receipt.to_bytes());
+        Ok(SignedRecord {
+            qr_text: export::bytes_to_qr(export::TRON_SIGNATURE_PREFIX, &out)
+                .map_err(|e| SignerError::Export { msg: e.to_string() })?,
+            policy: p.seal(&key),
+            seq: receipt.seq,
+        })
     }
 
     /// Sign the request, but only if it is still exactly the one reviewed
@@ -377,7 +551,9 @@ impl UnlockedWallet {
         qr_text: String,
         expected_txid: String,
         typed_last6: String,
-    ) -> Result<String, SignerError> {
+        now_ms: u64,
+        policy: Option<Vec<u8>>,
+    ) -> Result<SignedRecord, SignerError> {
         let bytes =
             export::psbt_from_qr(&qr_text).map_err(|e| SignerError::Sign { msg: e.to_string() })?;
         let psbt = btc_sign::parse(&bytes).map_err(sign_err)?;
@@ -393,15 +569,97 @@ impl UnlockedWallet {
                 msg: "the last 6 characters you typed don't match the recipient address. Check your paper address book".into(),
             });
         }
+        let (mut p, key) = self.policy(policy, now_ms)?;
+        let receipt = p
+            .record(&btc_payment(&review), &review.txid, now_ms)
+            .map_err(policy_err)?;
         let (mut signed, _) = btc_sign::sign(psbt, &master).map_err(sign_err)?;
         // The PC keeps its own copy and takes only the signatures, so the
         // previous transactions needn't go back: a much smaller QR code.
         for i in &mut signed.inputs {
             i.non_witness_utxo = None;
         }
-        export::psbt_to_qr(&signed.serialize())
-            .map_err(|e| SignerError::Export { msg: e.to_string() })
+        Ok(SignedRecord {
+            qr_text: export::psbt_to_qr(&signed.serialize())
+                .map_err(|e| SignerError::Export { msg: e.to_string() })?,
+            policy: p.seal(&key),
+            seq: receipt.seq,
+        })
     }
+
+    /// The allowlist, limits and recent signatures. `policy` is the saved
+    /// file (None if there is none yet).
+    pub fn policy_view(
+        &self,
+        policy: Option<Vec<u8>>,
+        now_ms: u64,
+    ) -> Result<PolicyRecord, SignerError> {
+        Ok(self.policy(policy, now_ms)?.0.view(now_ms).into())
+    }
+
+    /// Add an address (usable after the waiting period). Returns the new
+    /// policy file to save.
+    pub fn policy_add_address(
+        &self,
+        policy: Option<Vec<u8>>,
+        net: String,
+        address: String,
+        label: String,
+        now_ms: u64,
+    ) -> Result<Vec<u8>, SignerError> {
+        let (mut p, key) = self.policy(policy, now_ms)?;
+        let net = Net::parse(&net).map_err(policy_err)?;
+        p.add_address(net, &address, &label, now_ms)
+            .map_err(policy_err)?;
+        Ok(p.seal(&key))
+    }
+
+    pub fn policy_remove_address(
+        &self,
+        policy: Option<Vec<u8>>,
+        net: String,
+        address: String,
+        now_ms: u64,
+    ) -> Result<Vec<u8>, SignerError> {
+        let (mut p, key) = self.policy(policy, now_ms)?;
+        let net = Net::parse(&net).map_err(policy_err)?;
+        p.remove_address(net, &address).map_err(policy_err)?;
+        Ok(p.seal(&key))
+    }
+
+    /// Set a daily limit (decimal text in the asset's unit). Lowering is
+    /// immediate; raising waits.
+    pub fn policy_set_limit(
+        &self,
+        policy: Option<Vec<u8>>,
+        asset: String,
+        daily: String,
+        now_ms: u64,
+    ) -> Result<Vec<u8>, SignerError> {
+        let (mut p, key) = self.policy(policy, now_ms)?;
+        let asset = Asset::parse(&asset).map_err(policy_err)?;
+        let amount = asset.parse_amount(&daily).map_err(policy_err)?;
+        p.set_limit(asset, amount, now_ms).map_err(policy_err)?;
+        Ok(p.seal(&key))
+    }
+}
+
+fn btc_payment(r: &btc_sign::Review) -> Payment {
+    Payment {
+        asset: Asset::BtcSignet,
+        recipient: r.recipient.clone(),
+        amount: u128::from(r.amount_sats),
+    }
+}
+
+fn tron_payment(raw: &[u8]) -> Result<Payment, SignerError> {
+    let t = tron_tx::Trc20Transfer::decode_raw(raw)
+        .map_err(|e| SignerError::Sign { msg: e.to_string() })?;
+    Ok(Payment {
+        asset: Asset::UsdtTronNile,
+        recipient: t.recipient.to_base58(),
+        amount: t.amount,
+    })
 }
 
 /// The watch-only export string shown as a QR code for the PC app.
@@ -526,7 +784,36 @@ mod tests {
         let (psbt, plan) = btc_send::build(&acct, &coins, &to, 40_000, 2, 0).expect("build");
         let qr = export::psbt_to_qr(&psbt.serialize()).expect("qr");
 
-        let review = w.review_btc(qr.clone()).expect("review");
+        // Not on the tablet's allowlist yet: refused.
+        let now: u64 = 1_800_000_000_000;
+        let e = w
+            .review_btc(qr.clone(), now, None)
+            .expect_err("not allowlisted");
+        assert!(e.to_string().contains("allowlist"), "{e}");
+        let policy = w
+            .policy_add_address(
+                None,
+                "btc-signet".into(),
+                to.to_string(),
+                "Me".into(),
+                now - 600_000,
+            )
+            .expect("allow");
+        let policy = w
+            .policy_add_address(
+                Some(policy),
+                "tron-nile".into(),
+                "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".into(),
+                "Shop".into(),
+                now - 600_000,
+            )
+            .expect("allow");
+        // Another wallet's policy file is refused.
+        assert!(w.policy_view(Some(b"{}".to_vec()), now).is_err());
+        let review = w
+            .review_btc(qr.clone(), now, Some(policy.clone()))
+            .expect("review");
+        assert_eq!(review.recipient_label, "Me");
         assert_eq!(review.txid, plan.txid);
         assert_eq!(review.amount_sats, 40_000);
         let last6: String = review
@@ -539,16 +826,37 @@ mod tests {
             .rev()
             .collect();
         assert!(matches!(
-            w.sign_btc(qr.clone(), review.txid.clone(), "zzzzzz".into()),
+            w.sign_btc(
+                qr.clone(),
+                review.txid.clone(),
+                "zzzzzz".into(),
+                now,
+                Some(policy.clone())
+            ),
             Err(SignerError::Sign { .. })
         ));
         assert!(matches!(
-            w.sign_btc(qr.clone(), "00".repeat(32), last6.clone()),
+            w.sign_btc(
+                qr.clone(),
+                "00".repeat(32),
+                last6.clone(),
+                now,
+                Some(policy.clone())
+            ),
             Err(SignerError::Sign { .. })
         ));
-        let signed_qr = w
-            .sign_btc(qr, review.txid.clone(), last6.to_uppercase())
+        let signed = w
+            .sign_btc(
+                qr,
+                review.txid.clone(),
+                last6.to_uppercase(),
+                now,
+                Some(policy),
+            )
             .expect("sign");
+        assert_eq!(signed.seq, 1);
+        let policy = signed.policy;
+        let signed_qr = signed.qr_text;
         let signed =
             btc_send::from_bytes(&export::psbt_from_qr(&signed_qr).expect("bytes")).expect("psbt");
         let tx = btc_send::finalize(&psbt, &signed).expect("finalize");
@@ -557,7 +865,6 @@ mod tests {
         // TRON Nile: the request the PC builds, reviewed and signed here.
         let me: chain_tron::TronAddress = w.public().tron.parse().expect("tron");
         let to: chain_tron::TronAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t".parse().expect("to");
-        let now: u64 = 1_800_000_000_000;
         let t = tron_tx::Trc20Transfer {
             ref_block_bytes: [1, 2],
             ref_block_hash: [3; 8],
@@ -571,7 +878,10 @@ mod tests {
         };
         let raw = t.encode_raw();
         let qr = export::bytes_to_qr(export::TRON_REQUEST_PREFIX, &raw).expect("qr");
-        let review = w.review_tron(qr.clone(), now).expect("review");
+        let review = w
+            .review_tron(qr.clone(), now, Some(policy.clone()))
+            .expect("review");
+        assert_eq!(review.recipient_label, "Shop");
         assert_eq!(review.amount_usdt, "2.5");
         assert_eq!(review.from, me.to_base58());
         // Case matters for TRON: "LjGt" lowercase is refused.
@@ -580,16 +890,48 @@ mod tests {
                 qr.clone(),
                 review.txid.clone(),
                 "zgjlj6t".chars().skip(1).collect(),
-                now
+                now,
+                Some(policy.clone())
             )
             .is_err());
-        let sig_qr = w
-            .sign_tron(qr, review.txid.clone(), "gjLj6t".into(), now)
+        let signed = w
+            .sign_tron(
+                qr.clone(),
+                review.txid.clone(),
+                "gjLj6t".into(),
+                now,
+                Some(policy),
+            )
             .expect("sign");
-        let answer = export::bytes_from_qr(export::TRON_SIGNATURE_PREFIX, &sig_qr).expect("answer");
+        assert_eq!(signed.seq, 2);
+        let answer =
+            export::bytes_from_qr(export::TRON_SIGNATURE_PREFIX, &signed.qr_text).expect("answer");
+        assert_eq!(answer.len(), 32 + 65 + 40);
         assert_eq!(answer[..32], tron_tx::txid(&raw));
-        let sig: [u8; 65] = answer[32..].try_into().expect("65");
+        let sig: [u8; 65] = answer[32..97].try_into().expect("65");
         assert_eq!(tron_tx::recover_signer(&raw, &sig), Ok(me));
+        let receipt = policy::Receipt::from_bytes(&answer[97..]).expect("receipt");
+        assert_eq!(receipt.seq, 2);
+        let view = w
+            .policy_view(Some(signed.policy.clone()), now)
+            .expect("view");
+        assert_eq!(view.signed_total, 2);
+        assert_eq!(view.head, hex_of(&receipt.head));
+        // Lower the daily limit below what was signed: the same payment is refused.
+        let policy = w
+            .policy_set_limit(
+                Some(signed.policy),
+                "usdt-tron-nile".into(),
+                "3".into(),
+                now,
+            )
+            .expect("limit");
+        let e = w.review_tron(qr, now, Some(policy)).expect_err("limit");
+        assert!(e.to_string().contains("daily limit"), "{e}");
+    }
+
+    fn hex_of(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
     #[test]

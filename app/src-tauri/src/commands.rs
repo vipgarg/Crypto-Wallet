@@ -1145,14 +1145,29 @@ pub async fn finish_tron_test_send(
         })?;
         (p.raw.clone(), p.owner, p.wallet_id.clone())
     };
-    let signed = tron_test::finalize(&raw, &owner, &answer)?;
+    let (signed, receipt) = tron_test::finalize(&raw, &owner, &answer)?;
     let txid = tron_tx::txid(&raw);
-    let sent = tron_test::broadcast(&state.http, &state.config, &signed, &txid).await?;
+    let mut sent = tron_test::broadcast(&state.http, &state.config, &signed, &txid).await?;
     *state.pending_tron.lock().map_err(|_| LOCK_ERR.to_owned())? = None;
+    let log = match receipt {
+        Some(r) => {
+            let head = hex::encode(r.head);
+            let previous = state.session.record_tablet_receipt(
+                &wallet_id,
+                crate::session::TabletReceipt {
+                    seq: r.seq,
+                    head: head.clone(),
+                },
+            )?;
+            sent.log_note = tron_test::receipt_note(previous.map(|p| p.seq), r.seq);
+            format!(", tablet log #{} head {}", r.seq, &head[..8])
+        }
+        None => String::new(),
+    };
     state.session.audit().record(
         Event::TestPaymentSent,
         &format!(
-            "{wallet_id} (TRON Nile), transaction {}",
+            "{wallet_id} (TRON Nile), transaction {}{log}",
             sent.txid.chars().take(8).collect::<String>()
         ),
     );

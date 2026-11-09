@@ -13,12 +13,14 @@
 //!
 //! - `btc_sign`: Bitcoin signing, **signet (test network) only** in this build.
 //! - `tron_sign`: TRON USDT signing, **Nile (test network) only** in this build.
+//! - `policy`: the tablet's allowlist, daily limits and signing log.
 
 pub mod accounts;
 pub mod attestation;
 pub mod btc_sign;
 pub mod entropy;
 pub mod export;
+pub mod policy;
 pub mod seed;
 pub mod tron_sign;
 pub mod vault;
