@@ -41,7 +41,7 @@ use wallet_core::{
 use wallet_types::{Network, Tier};
 use zeroize::Zeroizing;
 
-use crate::session::{AuthStatus, SessionState, SetupInfo};
+use crate::session::{AuthStatus, SessionState, Settings, SetupInfo};
 use crate::testnet::{self, PendingSend, SentView, TestWallet, TestWalletView};
 
 pub struct AppState {
@@ -303,7 +303,7 @@ pub fn remove_wallet(state: State<'_, AppState>, id: String) -> Result<Vec<Walle
 
 #[tauri::command]
 pub async fn get_portfolio(state: State<'_, AppState>) -> Result<Portfolio, String> {
-    let registry = read_registry(&state)?;
+    let registry = registry_for_use(&state)?;
     state.progress.begin()?;
     let result = tokio::time::timeout(
         REFRESH_TIME_LIMIT,
@@ -353,7 +353,10 @@ pub async fn get_activity(
     match network {
         Network::Tron => tron_activity(&state, &registry, wallet).await,
         Network::Ethereum => eth_activity(&state, &registry, wallet).await,
-        Network::Bitcoin => btc_activity(&state, &registry, wallet).await,
+        Network::Bitcoin => {
+            require_bitcoin(&state)?;
+            btc_activity(&state, &registry, wallet).await
+        }
     }
 }
 
@@ -748,6 +751,9 @@ pub async fn add_address_book_entry(
     entry: NewBookEntry,
 ) -> Result<AddressBookView, String> {
     state.session.with_book(false, |_, _| Ok(()))?;
+    if entry.network == Network::Bitcoin {
+        require_bitcoin(&state)?;
+    }
     let now = current_network_time(&state).await.ok_or_else(|| {
         "Couldn't confirm the current time from at least two network sources, so the waiting period can't start. Check the internet connection and try again.".to_owned()
     })?;
@@ -918,6 +924,7 @@ pub async fn scan_test_wallet(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<TestWalletView, String> {
+    require_bitcoin(&state)?;
     let w = find_test_wallet(&state, &id)?;
     tokio::time::timeout(
         Duration::from_secs(120),
@@ -946,6 +953,7 @@ pub async fn prepare_test_send(
     amount_sats: u64,
     fee_rate: u64,
 ) -> Result<PreparedSend, String> {
+    require_bitcoin(&state)?;
     let w = find_test_wallet(&state, &id)?;
     let to = btc_send::parse_recipient(&recipient).map_err(|e| e.to_string())?;
     let acct = w.account()?;
@@ -985,6 +993,7 @@ pub async fn finish_test_send(
     state: State<'_, AppState>,
     signed_qr: String,
 ) -> Result<SentView, String> {
+    require_bitcoin(&state)?;
     // Login check (counts as activity).
     state.session.with_test_wallets(false, |_| Ok(()))?;
     let bytes = watch_export::psbt_from_qr(&signed_qr).map_err(|_| {
@@ -1009,6 +1018,64 @@ pub async fn finish_test_send(
         ),
     );
     Ok(sent)
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+const BTC_PAUSED: &str = "Bitcoin is paused (About → Settings). Turn it back on to use it.";
+
+/// Fails when Bitcoin is paused.
+fn require_bitcoin(state: &AppState) -> Result<(), String> {
+    if state.session.settings()?.bitcoin_enabled {
+        Ok(())
+    } else {
+        Err(BTC_PAUSED.into())
+    }
+}
+
+/// The wallet list as used for checks: with Bitcoin paused, every wallet's
+/// Bitcoin key is left out (nothing is deleted from the stored list).
+fn registry_for_use(state: &AppState) -> Result<Registry, String> {
+    let mut r = read_registry(state)?;
+    if !state.session.settings()?.bitcoin_enabled {
+        for w in &mut r.wallets {
+            w.btc = None;
+        }
+    }
+    Ok(r)
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
+    state.session.settings()
+}
+
+/// Pause or resume Bitcoin everywhere in this app.
+#[tauri::command]
+pub fn set_bitcoin_enabled(state: State<'_, AppState>, enabled: bool) -> Result<Settings, String> {
+    let before = state.session.settings()?.bitcoin_enabled;
+    let s = state
+        .session
+        .update_settings(|s| s.bitcoin_enabled = enabled)?;
+    if before != enabled {
+        if !enabled {
+            // A payment waiting for a signature would be Bitcoin.
+            if let Ok(mut p) = state.pending_send.lock() {
+                *p = None;
+            }
+        }
+        state.session.audit().record(
+            Event::SettingsChanged,
+            if enabled {
+                "Bitcoin resumed"
+            } else {
+                "Bitcoin paused"
+            },
+        );
+    }
+    Ok(s)
 }
 
 #[tauri::command]
@@ -1122,6 +1189,9 @@ pub async fn get_receive(
             "Watch-only wallet: its keys are not on your signer tablet. Only use this address if you control that wallet elsewhere.".to_owned(),
         ),
         _ => {}
+    }
+    if network == "bitcoin" {
+        require_bitcoin(&state)?;
     }
     let (net, assets, address, btc_index, signer_hint) = match network.as_str() {
         "bitcoin" => match &wallet.btc {
@@ -1436,7 +1506,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            27,
+            29,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

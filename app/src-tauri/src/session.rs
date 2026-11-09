@@ -47,12 +47,38 @@ struct StoreContents {
     /// Bitcoin signet test wallets (Phase 2 testing). Added later.
     #[serde(default)]
     test_wallets: Vec<TestWallet>,
+    /// User settings. Added later.
+    #[serde(default)]
+    settings: Settings,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// User settings, kept in the encrypted store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    /// Bitcoin shown and checked. When off ("paused"), nothing is deleted:
+    /// wallets keep their Bitcoin key, it is just hidden and not queried.
+    #[serde(default = "yes")]
+    pub bitcoin_enabled: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            bitcoin_enabled: true,
+        }
+    }
 }
 
 struct Unlocked {
     registry: Registry,
     address_book: AddressBook,
     test_wallets: Vec<TestWallet>,
+    settings: Settings,
     key: Zeroizing<[u8; 32]>,
     kdf: KdfParams,
     totp_secret: Zeroizing<Vec<u8>>,
@@ -205,6 +231,7 @@ impl SessionState {
             registry,
             address_book: AddressBook::default(),
             test_wallets: Vec::new(),
+            settings: Settings::default(),
             key,
             kdf,
             totp_secret: secret,
@@ -236,6 +263,7 @@ impl SessionState {
             totp_last_step: u.totp_last_step,
             address_book: u.address_book.clone(),
             test_wallets: u.test_wallets.clone(),
+            settings: u.settings,
         };
         let bytes = store::seal(&u.key, &u.kdf, &contents).map_err(|e| e.to_string())?;
         store::write_atomic(&self.paths.store, &bytes).map_err(|e| e.to_string())
@@ -290,6 +318,7 @@ impl SessionState {
             registry: contents.registry,
             address_book: contents.address_book,
             test_wallets: contents.test_wallets,
+            settings: contents.settings,
             key,
             kdf,
             totp_secret: secret,
@@ -356,6 +385,35 @@ impl SessionState {
             return Err(e);
         }
         Ok(out)
+    }
+
+    /// Current settings (login required).
+    pub fn settings(&self) -> Result<Settings, String> {
+        let s = self.inner.lock().map_err(|_| INTERNAL.to_owned())?;
+        match &*s {
+            Session::Unlocked(u) if u.last_activity.elapsed() <= IDLE_LOCK => Ok(u.settings),
+            _ => Err(LOCKED_MSG.into()),
+        }
+    }
+
+    /// Change settings; encrypted and saved before taking effect.
+    pub fn update_settings(&self, f: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
+        let mut s = self.inner.lock().map_err(|_| INTERNAL.to_owned())?;
+        let Session::Unlocked(u) = &mut *s else {
+            return Err(LOCKED_MSG.into());
+        };
+        if u.last_activity.elapsed() > IDLE_LOCK {
+            *s = Session::Locked;
+            return Err(LOCKED_MSG.into());
+        }
+        u.last_activity = Instant::now();
+        let previous = u.settings;
+        f(&mut u.settings);
+        if let Err(e) = self.persist(u) {
+            u.settings = previous;
+            return Err(e);
+        }
+        Ok(u.settings)
     }
 
     /// Run `f` on the test wallets if unlocked. With `save`, the change is
@@ -444,6 +502,17 @@ mod tests {
             "{:06}",
             totp::code_at_step(&s, now_unix() / totp::STEP_SECS, 6)
         )
+    }
+
+    #[test]
+    fn older_stores_load_with_bitcoin_on() {
+        let old = r#"{"version":1,"registry":{"version":1,"wallets":[]},"totp_secret":"HP4BBOUSJXXOTVF27JZMFY4KIBXMWG2Z","totp_last_step":0}"#;
+        let c: StoreContents = serde_json::from_str(old).expect("old store");
+        assert!(c.settings.bitcoin_enabled);
+        let mut v: serde_json::Value = serde_json::from_str(old).expect("json");
+        v["settings"] = serde_json::json!({"bitcoin_enabled": false});
+        let c: StoreContents = serde_json::from_value(v).expect("with settings");
+        assert!(!c.settings.bitcoin_enabled);
     }
 
     #[test]

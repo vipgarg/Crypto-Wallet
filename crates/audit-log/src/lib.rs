@@ -54,6 +54,8 @@ pub enum Event {
     TestWalletAdded,
     TestWalletRemoved,
     TestPaymentSent,
+    /// A setting changed (e.g. Bitcoin paused or resumed).
+    SettingsChanged,
     /// PC safety checks reported a failure or warning.
     ChecksProblem,
 }

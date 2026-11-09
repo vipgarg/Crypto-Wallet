@@ -30,6 +30,8 @@ const ALLOWED = new Set([
   "scan_test_wallet",
   "prepare_test_send",
   "finish_test_send",
+  "get_settings",
+  "set_bitcoin_enabled",
 ]);
 
 window.__TAURI_ISOLATION_HOOK__ = (payload) => {

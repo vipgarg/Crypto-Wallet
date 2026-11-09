@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { QrCode } from "./Auth";
+import { useBitcoin } from "./settings";
 import { api, errorText, type ReceiveNetwork, type ReceiveView, type WalletView } from "./api";
 
 const NETWORKS: { id: ReceiveNetwork; label: string; has: (w: WalletView) => boolean }[] = [
@@ -30,6 +31,7 @@ export function ChunkedAddress({ a }: { a: string }) {
 }
 
 export function ReceivePage() {
+  const btc = useBitcoin();
   const [wallets, setWallets] = useState<WalletView[]>([]);
   const [walletId, setWalletId] = useState("");
   const [network, setNetwork] = useState<ReceiveNetwork | null>(null);
@@ -54,7 +56,7 @@ export function ReceivePage() {
   }, []);
 
   const wallet = wallets.find((w) => w.id === walletId);
-  const available = wallet ? NETWORKS.filter((n) => n.has(wallet)) : [];
+  const available = wallet ? NETWORKS.filter((n) => n.has(wallet) && (btc || n.id !== "bitcoin")) : [];
 
   useEffect(() => {
     setNetwork(available[0]?.id ?? null);

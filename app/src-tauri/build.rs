@@ -30,6 +30,8 @@ const COMMANDS: &[&str] = &[
     "scan_test_wallet",
     "prepare_test_send",
     "finish_test_send",
+    "get_settings",
+    "set_bitcoin_enabled",
 ];
 
 fn main() {

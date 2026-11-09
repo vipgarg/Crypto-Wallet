@@ -23,6 +23,7 @@ import { AddFromSigner } from "./ScanSigner";
 import { AuditLogPage } from "./AuditLog";
 import { AddressBookPage } from "./AddressBook";
 import { TestSendPage } from "./TestSend";
+import { BitcoinContext, useBitcoin } from "./settings";
 
 type Page = "portfolio" | "receive" | "activity" | "addresses" | "wallets" | "testsend" | "checks" | "log" | "about";
 
@@ -223,6 +224,7 @@ const TIERS: { value: Tier; label: string }[] = [
 ];
 
 function WalletsPage({ onChanged }: { onChanged: () => void }) {
+  const btc = useBitcoin();
   const [wallets, setWallets] = useState<WalletView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({ id: "", label: "", tier: "savings" as Tier, btc: "", eth: "", tron: "" });
@@ -287,7 +289,7 @@ function WalletsPage({ onChanged }: { onChanged: () => void }) {
             <p className="hint">From the signer tablet · fingerprint {w.signer_fingerprint}</p>
           )}
           <dl>
-            {w.btc && (
+            {btc && w.btc && (
               <>
                 <dt>Bitcoin</dt>
                 <dd className="mono">
@@ -345,10 +347,12 @@ function WalletsPage({ onChanged }: { onChanged: () => void }) {
             ))}
           </select>
         </label>
-        <label>
-          Bitcoin <span className="muted">(zpub/xpub at m/84'/0'/0', or one address)</span>
-          <input value={form.btc} onChange={set("btc")} className="mono" autoComplete="off" spellCheck={false} />
-        </label>
+        {btc && (
+          <label>
+            Bitcoin <span className="muted">(zpub/xpub at m/84'/0'/0', or one address)</span>
+            <input value={form.btc} onChange={set("btc")} className="mono" autoComplete="off" spellCheck={false} />
+          </label>
+        )}
         <label>
           Ethereum address <span className="muted">(checksummed 0x…)</span>
           <input value={form.eth} onChange={set("eth")} className="mono" autoComplete="off" spellCheck={false} />
@@ -365,9 +369,29 @@ function WalletsPage({ onChanged }: { onChanged: () => void }) {
   );
 }
 
-function AboutPage() {
+function AboutPage({ onBitcoin }: { onBitcoin: (enabled: boolean) => Promise<void> }) {
+  const btc = useBitcoin();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const toggle = async () => {
+    const next = !btc;
+    if (
+      !next &&
+      !window.confirm(
+        "Pause Bitcoin? Bitcoin balances, receive addresses, history and test sending are hidden and no longer checked. Nothing is deleted; you can turn it back on here.",
+      )
+    )
+      return;
+    setSaving(true);
+    try {
+      await onBitcoin(next);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
   useEffect(() => {
     api.appInfo().then(setInfo, (e) => setError(errorText(e)));
   }, []);
@@ -375,6 +399,18 @@ function AboutPage() {
   if (!info) return null;
   return (
     <section>
+      <h2>Settings</h2>
+      <div className="card">
+        <h3>Bitcoin: {btc ? "on" : "paused"}</h3>
+        <p className="hint">
+          {btc
+            ? "Bitcoin balances, receive addresses, history and test sending are shown."
+            : "Bitcoin is hidden everywhere and no Bitcoin server is asked anything. Nothing is deleted: wallets keep their Bitcoin key, and turning it back on restores everything. Keep email alerts on any Bitcoin address that ever held funds."}
+        </p>
+        <button className={btc ? "secondary" : ""} disabled={saving} onClick={() => void toggle()}>
+          {btc ? "Pause Bitcoin" : "Turn Bitcoin back on"}
+        </button>
+      </div>
       <h2>About this build</h2>
       <dl>
         <dt>Version</dt>
@@ -608,6 +644,8 @@ const HISTORY_NETWORKS: {
 ];
 
 function ActivityPage() {
+  const btc = useBitcoin();
+  const historyNetworks = HISTORY_NETWORKS.filter((n) => btc || n.id !== "bitcoin");
   const [tab, setTab] = useState<"transfers" | "transactions">("transfers");
   const [network, setNetwork] = useState<HistoryNetwork>("tron");
   const [allWallets, setAllWallets] = useState<WalletView[]>([]);
@@ -615,7 +653,7 @@ function ActivityPage() {
   const [data, setData] = useState<WalletActivity | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const net = HISTORY_NETWORKS.find((n) => n.id === network) ?? HISTORY_NETWORKS[0];
+  const net = historyNetworks.find((n) => n.id === network) ?? historyNetworks[0];
   const wallets = allWallets.filter(net.has);
 
   useEffect(() => {
@@ -657,7 +695,7 @@ function ActivityPage() {
         addresses that look like ones you use. Always take addresses from your verified address book.
       </p>
       <div className="tabs">
-        {HISTORY_NETWORKS.map((n) => (
+        {historyNetworks.map((n) => (
           <button key={n.id} className={network === n.id ? "active" : ""} onClick={() => setNetwork(n.id)}>
             {n.label}
           </button>
@@ -778,6 +816,18 @@ const IDLE_LOCK_MS = 5 * 60 * 1000;
 function MainApp({ onLock }: { onLock: () => void }) {
   const [page, setPage] = useState<Page>("portfolio");
   const portfolio = usePortfolio();
+  const [btc, setBtc] = useState(true);
+
+  useEffect(() => {
+    api.getSettings().then((s) => setBtc(s.bitcoin_enabled), () => undefined);
+  }, []);
+
+  const changeBitcoin = async (enabled: boolean) => {
+    const s = await api.setBitcoinEnabled(enabled);
+    setBtc(s.bitcoin_enabled);
+    portfolio.markStale();
+    if (!s.bitcoin_enabled && page === "testsend") setPage("about");
+  };
 
   // Idle lock: any key, click or mouse move counts as activity.
   useEffect(() => {
@@ -798,14 +848,19 @@ function MainApp({ onLock }: { onLock: () => void }) {
     };
   }, [onLock]);
 
+  const pages = (
+    ["portfolio", "receive", "activity", "addresses", "wallets", "testsend", "checks", "log", "about"] as Page[]
+  ).filter((p) => btc || p !== "testsend");
+
   return (
+    <BitcoinContext.Provider value={btc}>
     <div className="app">
       <header>
         <div className="brand">
           Watch-Only Wallet <span className="tag">no keys on this computer</span>
         </div>
         <nav>
-          {(["portfolio", "receive", "activity", "addresses", "wallets", "testsend", "checks", "log", "about"] as Page[]).map((p) => (
+          {pages.map((p) => (
             <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
               {p === "addresses" ? "Address book" : p === "testsend" ? "Test send" : p[0].toUpperCase() + p.slice(1)}
             </button>
@@ -827,11 +882,12 @@ function MainApp({ onLock }: { onLock: () => void }) {
           </section>
         )}
         {page === "addresses" && <AddressBookPage />}
-        {page === "testsend" && <TestSendPage />}
+        {page === "testsend" && btc && <TestSendPage />}
         {page === "log" && <AuditLogPage />}
-        {page === "about" && <AboutPage />}
+        {page === "about" && <AboutPage onBitcoin={changeBitcoin} />}
       </main>
     </div>
+    </BitcoinContext.Provider>
   );
 }
 

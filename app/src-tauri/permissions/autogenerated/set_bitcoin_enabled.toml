@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-bitcoin-enabled"
+description = "Enables the set_bitcoin_enabled command without any pre-configured scope."
+commands.allow = ["set_bitcoin_enabled"]
+
+[[permission]]
+identifier = "deny-set-bitcoin-enabled"
+description = "Denies the set_bitcoin_enabled command without any pre-configured scope."
+commands.deny = ["set_bitcoin_enabled"]

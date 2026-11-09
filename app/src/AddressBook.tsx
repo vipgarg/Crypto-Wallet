@@ -12,6 +12,7 @@ import {
   type VerifiedBy,
 } from "./api";
 import { ChunkedAddress } from "./Receive";
+import { useBitcoin } from "./settings";
 
 const NETWORKS: { id: HistoryNetwork; label: string; hint: string }[] = [
   { id: "tron", label: "TRON (TRC-20 USDT, TRX)", hint: "T…" },
@@ -61,6 +62,8 @@ const EMPTY = {
 };
 
 export function AddressBookPage() {
+  const btc = useBitcoin();
+  const networks = NETWORKS.filter((n) => btc || n.id !== "bitcoin");
   const [view, setView] = useState<AddressBookView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -125,7 +128,7 @@ export function AddressBookPage() {
     }
   };
 
-  const net = NETWORKS.find((n) => n.id === form.network) ?? NETWORKS[0];
+  const net = networks.find((n) => n.id === form.network) ?? networks[0];
 
   return (
     <section>
@@ -226,7 +229,7 @@ export function AddressBookPage() {
                 value={form.network}
                 onChange={(e) => setForm({ ...form, network: e.target.value as HistoryNetwork })}
               >
-                {NETWORKS.map((n) => (
+                {networks.map((n) => (
                   <option key={n.id} value={n.id}>
                     {n.label}
                   </option>

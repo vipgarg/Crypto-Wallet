@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The only capability: the main window may call the twenty-seven reviewed app commands. No core plugins, no shell, fs, http, opener or updater.",
+  "description": "The only capability: the main window may call the twenty-nine reviewed app commands. No core plugins, no shell, fs, http, opener or updater.",
   "local": true,
   "windows": ["main"],
   "permissions": [
@@ -31,6 +31,8 @@
     "allow-remove-test-wallet",
     "allow-scan-test-wallet",
     "allow-prepare-test-send",
-    "allow-finish-test-send"
+    "allow-finish-test-send",
+    "allow-get-settings",
+    "allow-set-bitcoin-enabled"
   ]
 }

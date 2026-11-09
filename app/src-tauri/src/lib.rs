@@ -88,6 +88,8 @@ pub fn run() {
             commands::scan_test_wallet,
             commands::prepare_test_send,
             commands::finish_test_send,
+            commands::get_settings,
+            commands::set_bitcoin_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

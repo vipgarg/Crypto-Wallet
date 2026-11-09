@@ -181,6 +181,10 @@ export interface SentView {
   explorer_url: string;
 }
 
+export interface Settings {
+  bitcoin_enabled: boolean;
+}
+
 export interface NewWalletInput {
   id: string;
   label: string;
@@ -358,6 +362,8 @@ export const api = {
   previewSignerWallet: (text: string) => call<SignerWalletPreview>("preview_signer_wallet", { text }),
   addSignerWallet: (text: string) => call<WalletView[]>("add_signer_wallet", { text }),
   getAuditLog: () => call<AuditView>("get_audit_log"),
+  getSettings: () => call<Settings>("get_settings"),
+  setBitcoinEnabled: (enabled: boolean) => call<Settings>("set_bitcoin_enabled", { enabled }),
   getAddressBook: () => call<AddressBookView>("get_address_book"),
   addAddressBookEntry: (entry: NewBookEntry) => call<AddressBookView>("add_address_book_entry", { entry }),
   removeAddressBookEntry: (id: string) => call<AddressBookView>("remove_address_book_entry", { id }),
