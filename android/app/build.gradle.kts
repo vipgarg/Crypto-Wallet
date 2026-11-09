@@ -4,6 +4,17 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// SHA-256 of the owner's signing certificate, pinned in android/signing-cert.sha256
+// once the owner has compared it with their own record. The app checks
+// itself against it at start-up; empty until pinned.
+val pinnedSigningCert: String = rootProject.file("signing-cert.sha256").let { f ->
+    if (!f.exists()) return@let ""
+    val v = f.readLines().map { it.trim() }.firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+        ?.replace(":", "")?.lowercase() ?: ""
+    require(v.matches(Regex("^[0-9a-f]{64}$"))) { "signing-cert.sha256 must hold 64 hex characters" }
+    v
+}
+
 android {
     namespace = "com.vipgarg.walletsigner"
     compileSdk = 35
@@ -16,6 +27,7 @@ android {
         versionName = "0.1.0-testnet"
         // The tablet is 64-bit ARM; the Rust core is built for it by CI.
         ndk { abiFilters += "arm64-v8a" }
+        buildConfigField("String", "EXPECTED_SIGNING_CERT", "\"$pinnedSigningCert\"")
     }
 
     buildTypes {
@@ -38,6 +50,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

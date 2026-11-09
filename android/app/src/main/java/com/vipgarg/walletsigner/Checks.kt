@@ -1,7 +1,9 @@
 package com.vipgarg.walletsigner
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import java.security.MessageDigest
 import android.net.ConnectivityManager
 import android.provider.Settings
 import android.telephony.TelephonyManager
@@ -84,6 +86,8 @@ fun runChecks(context: Context): List<Check> {
         critical = true,
     )
 
+    checks += signingCheck(context)
+
     val devOptions = Settings.Global.getInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
     checks += Check(
         "Developer options off",
@@ -100,4 +104,50 @@ fun runChecks(context: Context): List<Check> {
         critical = false,
     )
     return checks
+}
+
+/** SHA-256 of this app's signing certificate (lowercase hex), or null. */
+fun signingCertSha256(context: Context): String? = runCatching {
+    val info = context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+    val si = info.signingInfo ?: return null
+    if (si.hasMultipleSigners()) return null
+    val cert = si.apkContentsSigners?.singleOrNull() ?: return null
+    MessageDigest.getInstance("SHA-256").digest(cert.toByteArray()).joinToString("") { "%02x".format(it) }
+}.getOrNull()
+
+private fun grouped(hex: String) = hex.uppercase().chunked(4).joinToString(" ")
+
+/**
+ * The app checks it was signed with the owner's key (pinned in the repo,
+ * android/signing-cert.sha256). Android itself refuses updates signed with
+ * another key; this also catches a wrong build installed fresh, and shows
+ * the fingerprint to compare with the owner's own record. A tampered app
+ * could skip this check, so the owner's comparison stays the real test.
+ */
+private fun signingCheck(context: Context): Check {
+    val actual = signingCertSha256(context)
+    val expected = BuildConfig.EXPECTED_SIGNING_CERT
+    val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    val kind = if (debuggable) " This is a debug build." else ""
+    return when {
+        actual == null -> Check("App signed with your key", false, "Couldn't read this app's signing certificate.", critical = true)
+        expected.isEmpty() -> Check(
+            "App signed with your key",
+            false,
+            "Not pinned yet.$kind Signing certificate SHA-256:\n${grouped(actual)}\nCompare it with the one shown when you made the key (keytool -list -v). Once it matches, it gets pinned and checked on every start.",
+            critical = false,
+        )
+        actual == expected -> Check(
+            "App signed with your key",
+            !debuggable,
+            if (debuggable) "Matches the pinned key, but this is a debug build." else "Matches the pinned key: ${grouped(actual).take(9)}…${grouped(actual).takeLast(9)}",
+            critical = false,
+        )
+        else -> Check(
+            "App signed with your key",
+            false,
+            "This app was signed with a DIFFERENT key than the pinned one. Don't use it: uninstall it and install the APK from your own build.\nThis app: ${grouped(actual)}",
+            critical = true,
+        )
+    }
 }

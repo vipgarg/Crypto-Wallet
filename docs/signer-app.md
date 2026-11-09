@@ -77,6 +77,16 @@ Test networks → (unlock) → **Allowlist, limits and signing log**. The tablet
 
 **After updating the app:** add your test recipients to the allowlist and wait 10 minutes before the next test payment.
 
+## App signed with your key (start-up check)
+
+The start-up checks show the SHA-256 of the certificate the app was signed with. Compare it once with your own record (on your PC: `keytool -list -v -keystore <your keystore>`, line "SHA256"); CI also writes it to `signing-cert.txt` inside the build download. When they match, put it in `android/signing-cert.sha256` (one line, 64 hex characters, colons allowed). From then on:
+
+- CI fails any build signed with another key;
+- the app checks itself on every start and blocks if it was signed with another key (shown in red with the wrong fingerprint);
+- Android itself already refuses to update the app with a differently signed APK.
+
+A tampered app could skip its own check, so your own comparison of the fingerprint stays the real test, and real-network signing will require the pin.
+
 ## Restore: confirm the fingerprint
 
 After a restore (and the passphrase, for Savings/Vault), the tablet shows the wallet's **fingerprint** and its TRON and Ethereum addresses and asks whether they match your paper or the PC's Wallets page. A mistyped passphrase (typed the same way twice) is otherwise silently accepted and opens a different, empty wallet. "Doesn't match" goes back to the passphrase (or the words). Write each wallet's fingerprint on its paper when you create it.

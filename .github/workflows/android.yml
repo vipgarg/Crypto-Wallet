@@ -83,6 +83,17 @@ jobs:
               --out "$RUNNER_TEMP/signed.apk" "$RUNNER_TEMP/aligned.apk"
             rm -f "$KS"
             "$BT/apksigner" verify --print-certs "$RUNNER_TEMP/signed.apk" | grep -i "SHA-256" | tee "$RUNNER_TEMP/cert.txt"
+            # Once pinned, a build signed with any other key fails here.
+            if [ -f signing-cert.sha256 ]; then
+              PINNED="$(grep -v '^#' signing-cert.sha256 | tr -d ': \n' | tr 'A-F' 'a-f')"
+              ACTUAL="$(grep -i 'Signer #1 certificate SHA-256' "$RUNNER_TEMP/cert.txt" | sed -E 's/.*: *//' | tr -d ': ' | tr 'A-F' 'a-f')"
+              if [ "$PINNED" != "$ACTUAL" ]; then
+                echo "::error::The APK was signed with a different key than the one pinned in android/signing-cert.sha256"
+                exit 1
+              fi
+              echo "Signing certificate matches the pinned one."
+            fi
+            echo "CERT_FILE=$RUNNER_TEMP/cert.txt" >> "$GITHUB_ENV"
             echo "APK=$RUNNER_TEMP/signed.apk" >> "$GITHUB_ENV"
             echo "APK_KIND=release, signed with the owner's key" >> "$GITHUB_ENV"
           else
@@ -116,6 +127,7 @@ jobs:
           NAME="wallet-signer-testnet-${GITHUB_SHA::7}.apk"
           cp "$APK" "out/$NAME"
           echo "Build: $APK_KIND"
+          if [ -n "${CERT_FILE:-}" ]; then cp "$CERT_FILE" "out/signing-cert.txt"; cat out/signing-cert.txt; fi
           (cd out && sha256sum "$NAME" | tee "$NAME.sha256")
 
       - uses: actions/upload-artifact@v4
