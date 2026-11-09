@@ -102,7 +102,9 @@ jobs:
             # Once pinned, a build signed with any other key fails here.
             if [ -f signing-cert.sha256 ]; then
               PINNED="$(grep -v '^#' signing-cert.sha256 | tr -d ': \n' | tr 'A-F' 'a-f')"
-              ACTUAL="$(grep -i 'Signer #1 certificate SHA-256' "$RUNNER_TEMP/cert.txt" | sed -E 's/.*: *//' | tr -d ': ' | tr 'A-F' 'a-f')"
+              # apksigner prints "Signer #1 certificate SHA-256 digest: …" or
+              # "V3.0 Signer: certificate SHA-256 digest: …"; every line must match.
+              ACTUAL="$(grep -i 'certificate SHA-256 digest' "$RUNNER_TEMP/cert.txt" | sed -E 's/.*digest: *//' | tr -d ': ' | tr 'A-F' 'a-f' | sort -u)"
               if [ "$PINNED" != "$ACTUAL" ]; then
                 echo "::error::The APK was signed with a different key than the one pinned in android/signing-cert.sha256"
                 exit 1
