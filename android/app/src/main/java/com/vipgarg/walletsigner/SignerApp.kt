@@ -217,7 +217,7 @@ private fun HomeScreen(
 // Create / restore
 // ---------------------------------------------------------------------------
 
-private enum class Step { BASICS, DICE, RESTORE_WORDS, SHOW_WORDS, WORD_CHECK, PASSPHRASE, PASSWORD, SAVING }
+private enum class Step { BASICS, DICE, RESTORE_WORDS, SHOW_WORDS, WORD_CHECK, PASSPHRASE, CONFIRM_FP, PASSWORD, SAVING }
 
 private val ID_RULE = Regex("^[a-z][a-z0-9-]{0,31}$")
 
@@ -361,7 +361,7 @@ private fun CreateWallet(
                         for (i in words.indices) words[i] = ""
                         restoreError = null
                         error = null
-                        step = if (needsPassphrase) Step.PASSPHRASE else Step.PASSWORD
+                        step = if (needsPassphrase) Step.PASSPHRASE else Step.CONFIRM_FP
                     } catch (e: Exception) {
                         restoreError = "Can't restore: " + (e.message ?: "unknown error")
                     }
@@ -428,13 +428,20 @@ private fun CreateWallet(
             )
             SecretField(passphrase, { passphrase = it }, "Passphrase")
             SecretField(again, { again = it }, "Passphrase again")
+            error?.let { Hint(it, BAD) }
+            val focusPp = LocalSecureFocus.current
             Button(onClick = {
+                focusPp.close()
                 error = when {
                     passphrase.isEmpty() -> "Enter a passphrase."
                     passphrase != again -> "The two passphrases don't match."
                     else -> null
                 }
-                if (error == null) {
+                if (error == null && restore) {
+                    // A mistyped passphrase opens a different, empty wallet:
+                    // confirm the fingerprint before saving anything.
+                    step = Step.CONFIRM_FP
+                } else if (error == null) {
                     if (stored) {
                         step = Step.PASSWORD
                     } else {
@@ -458,13 +465,74 @@ private fun CreateWallet(
             }) { Text("Next") }
         }
 
+        Step.CONFIRM_FP -> {
+            val pub = remember(seed, passphrase) {
+                runCatching { seed?.derivePublic(if (needsPassphrase) passphrase else "") }.getOrNull()
+            }
+            if (pub == null) {
+                Hint("Couldn't work out this wallet's public data.", BAD)
+            } else {
+                Text("Is this the right wallet?", fontWeight = FontWeight.SemiBold)
+                Hint(
+                    "Compare the fingerprint with the one on your paper or on the PC's Wallets page. " +
+                        if (needsPassphrase) {
+                            "A mistyped passphrase gives a different, empty wallet with a different fingerprint."
+                        } else {
+                            "Different words give a different wallet."
+                        },
+                )
+                Text("Fingerprint: ${pub.fingerprint}", fontFamily = FontFamily.Monospace, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                Text("TRON address", fontWeight = FontWeight.SemiBold)
+                GroupedAddress(pub.tron)
+                Text("Ethereum address", fontWeight = FontWeight.SemiBold)
+                GroupedAddress(pub.eth)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        error = null
+                        if (needsPassphrase) {
+                            passphrase = ""
+                            step = Step.PASSPHRASE
+                        } else {
+                            step = Step.RESTORE_WORDS
+                        }
+                    }) { Text(if (needsPassphrase) "Doesn't match: re-enter passphrase" else "Doesn't match: re-enter words") }
+                    Button(onClick = {
+                        error = null
+                        if (stored) {
+                            step = Step.PASSWORD
+                        } else {
+                            // Vault tier: nothing secret is stored.
+                            val sd = seed ?: return@Button
+                            step = Step.SAVING
+                            scope.launch {
+                                val result = runCatching {
+                                    withContext(Dispatchers.Default) {
+                                        val p = sd.derivePublic(passphrase)
+                                        val entry = WalletEntry(id, label, tier, true, p)
+                                        store.save(entry, vault = null)
+                                        entry
+                                    }
+                                }
+                                passphrase = ""
+                                result.onSuccess(onDone).onFailure { error = it.message; step = Step.CONFIRM_FP }
+                            }
+                        }
+                    }) { Text("Matches: continue") }
+                }
+            }
+        }
+
         Step.PASSWORD -> {
             var password by remember { mutableStateOf("") }
             var again by remember { mutableStateOf("") }
             Hint("Vault password for this wallet only (at least 12 characters). It encrypts the seed on this tablet.")
             SecretField(password, { password = it }, "Vault password")
             SecretField(again, { again = it }, "Vault password again")
+            // Shown right above the button (the top of the screen may be scrolled away).
+            error?.let { Hint(it, BAD) }
+            val focusPw = LocalSecureFocus.current
             Button(onClick = {
+                focusPw.close()
                 error = when {
                     password.length < 12 -> "Use at least 12 characters."
                     password != again -> "The two passwords don't match."

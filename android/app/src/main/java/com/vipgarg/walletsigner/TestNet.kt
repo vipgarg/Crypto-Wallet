@@ -79,9 +79,14 @@ fun TestNetScreen(entry: WalletEntry, store: WalletStore, onBack: () -> Unit) {
         Hint("Unlock this wallet for this screen only. It locks again when you leave.")
         SecretField(password, { password = it }, "Vault password")
         if (entry.usesPassphrase) SecretField(passphrase, { passphrase = it }, "Passphrase")
+        // Repeated next to the button: the top may be scrolled out of view.
+        error?.let { Hint(it, BAD) }
+        busy?.let { Hint(it) }
+        val focusUnlock = LocalSecureFocus.current
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onBack) { Text("Back") }
             Button(enabled = busy == null && password.isNotEmpty(), onClick = {
+                focusUnlock.close()
                 val bytes = store.vault(entry.id)
                 if (bytes == null) {
                     error = "No stored seed for this wallet."

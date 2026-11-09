@@ -71,6 +71,10 @@ Wallet → **Test network (signet)** (Spending/Savings wallets): unlock with the
 | Tamper check (verified boot) | Start-up check (critical): the secure hardware creates a throw-away key with a fresh challenge; the certificate chain must verify up to one of Google's pinned attestation roots (RSA root and "Key Attestation CA1", from github.com/android/keyattestation `roots.json`); the Rust core reads the root of trust: bootloader **locked** and verified boot **Verified** are required. Tested against real attestations from Google's test data (a locked Pixel passes, an unlocked one fails). Limit: attestation-key revocation can't be checked offline. |
 | Fixed signing key | When the repository has the secrets `SIGNER_KEYSTORE_B64`, `SIGNER_KEYSTORE_PASSWORD` and `SIGNER_KEY_ALIAS`, CI builds a **release** APK (not debuggable) signed with that key, so updates install with `adb install -r` and keep the wallets. Without them, a debug build as before. Still to do once the key exists: the app checks its own signing-certificate fingerprint at start. |
 
+## Restore: confirm the fingerprint
+
+After a restore (and the passphrase, for Savings/Vault), the tablet shows the wallet's **fingerprint** and its TRON and Ethereum addresses and asks whether they match your paper or the PC's Wallets page. A mistyped passphrase (typed the same way twice) is otherwise silently accepted and opens a different, empty wallet. "Doesn't match" goes back to the passphrase (or the words). Write each wallet's fingerprint on its paper when you create it.
+
 ## Installing a test build on the tablet
 
 1. On GitHub: **Actions → "Android signer (testnet)" → latest green run → Artifacts**, download `wallet-signer-testnet-<commit>`. It contains the APK and a `.sha256` file.
