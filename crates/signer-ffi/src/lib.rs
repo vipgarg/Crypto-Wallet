@@ -178,6 +178,9 @@ impl Seed {
     }
 
     /// Encrypt this seed into a vault file (Spending/Savings only).
+    /// `real_wait_minutes`: a real wallet's starting waiting period (10 to
+    /// 1440; ignored for test wallets).
+    #[allow(clippy::too_many_arguments)] // one flat call across the Kotlin bridge
     pub fn seal_vault(
         &self,
         id: String,
@@ -186,6 +189,7 @@ impl Seed {
         public: WalletPublicRecord,
         uses_passphrase: bool,
         vault_password: String,
+        real_wait_minutes: u32,
     ) -> Result<Vec<u8>, SignerError> {
         let vault_password = Zeroizing::new(vault_password);
         let kdf = vault::signer_kdf().map_err(|e| SignerError::Vault { msg: e.to_string() })?;
@@ -195,6 +199,7 @@ impl Seed {
             tier: parse_tier(&tier)?,
             public: public.into(),
             uses_passphrase,
+            real_wait_minutes: Some(real_wait_minutes),
         };
         vault::create(&info, &self.inner, &vault_password, kdf)
             .map_err(|e| SignerError::Vault { msg: e.to_string() })
@@ -255,8 +260,15 @@ impl UnlockedWallet {
         now_ms: u64,
     ) -> Result<(Policy, [u8; 32]), SignerError> {
         let key = policy::mac_key(&self.master()?);
-        let p = Policy::open(bytes.as_deref(), &key, &self.inner.id.to_string(), now_ms)
-            .map_err(policy_err)?;
+        let initial_wait = u64::from(self.inner.real_wait_minutes.unwrap_or(1440)) * 60_000;
+        let p = Policy::open_with_real_wait(
+            bytes.as_deref(),
+            &key,
+            &self.inner.id.to_string(),
+            now_ms,
+            initial_wait,
+        )
+        .map_err(policy_err)?;
         Ok((p, key))
     }
 }
@@ -312,6 +324,11 @@ pub struct PolicyRecord {
     pub recent: Vec<LogRecord>,
     pub signed_total: u64,
     pub head: String,
+    /// This wallet's waiting period for new addresses and limit raises.
+    pub wait_minutes: u64,
+    /// A shorter waiting period that takes effect later, and from when.
+    pub pending_wait_minutes: Option<u64>,
+    pub pending_wait_from_ms: u64,
 }
 
 impl From<policy::PolicyView> for PolicyRecord {
@@ -355,6 +372,9 @@ impl From<policy::PolicyView> for PolicyRecord {
                 })
                 .collect(),
             signed_total: v.signed_total,
+            wait_minutes: v.test_wait_minutes,
+            pending_wait_minutes: v.pending_test_wait.map(|(m, _)| m),
+            pending_wait_from_ms: v.pending_test_wait.map_or(0, |(_, f)| f),
             head: v.head,
         }
     }
@@ -754,7 +774,15 @@ impl UnlockedWallet {
         policy: Option<Vec<u8>>,
         now_ms: u64,
     ) -> Result<PolicyRecord, SignerError> {
-        let mut v: PolicyRecord = self.policy(policy, now_ms)?.0.view(now_ms).into();
+        let view = self.policy(policy, now_ms)?.0.view(now_ms);
+        let (wait, pending) = match self.mode() {
+            Mode::Test => (view.test_wait_minutes, view.pending_test_wait),
+            Mode::Real => (view.real_wait_minutes, view.pending_real_wait),
+        };
+        let mut v: PolicyRecord = view.into();
+        v.wait_minutes = wait;
+        v.pending_wait_minutes = pending.map(|(m, _)| m);
+        v.pending_wait_from_ms = pending.map_or(0, |(_, f)| f);
         let mode = self.mode();
         v.limits.retain(|l| {
             Asset::parse(&l.asset).is_ok_and(|a| a.net().is_test() == (mode == Mode::Test))
@@ -800,6 +828,21 @@ impl UnlockedWallet {
         let (mut p, key) = self.policy(policy, now_ms)?;
         let net = Net::parse(&net).map_err(policy_err)?;
         p.remove_address(net, &address).map_err(policy_err)?;
+        Ok(p.seal(&key))
+    }
+
+    /// Set this wallet's waiting period (minutes; real wallets 10 to 1440,
+    /// test wallets 1 to 1440). Longer applies at once, shorter only after
+    /// the current waiting period. Returns the new policy file to save.
+    pub fn policy_set_wait(
+        &self,
+        policy: Option<Vec<u8>>,
+        minutes: u64,
+        now_ms: u64,
+    ) -> Result<Vec<u8>, SignerError> {
+        let (mut p, key) = self.policy(policy, now_ms)?;
+        p.set_wait(self.mode() == Mode::Real, minutes, now_ms)
+            .map_err(policy_err)?;
         Ok(p.seal(&key))
     }
 
@@ -938,6 +981,7 @@ mod tests {
                 public,
                 false,
                 "vault password 123".into(),
+                1440,
             )
             .expect("seal");
         let w = unlock_vault(vault, "vault password 123".into(), String::new()).expect("unlock");
@@ -1107,6 +1151,19 @@ mod tests {
             .policy_view(Some(signed.policy.clone()), now)
             .expect("view");
         assert_eq!(view.signed_total, 2);
+        assert_eq!(view.wait_minutes, 10);
+        // Shorter wait: only after the current one.
+        let shorter = w
+            .policy_set_wait(Some(signed.policy.clone()), 2, now)
+            .expect("wait");
+        let v2 = w.policy_view(Some(shorter.clone()), now).expect("view");
+        assert_eq!((v2.wait_minutes, v2.pending_wait_minutes), (10, Some(2)));
+        assert_eq!(
+            w.policy_view(Some(shorter), now + 600_000)
+                .expect("view")
+                .wait_minutes,
+            2
+        );
         assert_eq!(view.head, hex_of(&receipt.head));
         // Lower the daily limit below what was signed: the same payment is refused.
         let policy = w
@@ -1197,6 +1254,7 @@ mod tests {
                 public,
                 false,
                 "vault password 123".into(),
+                10,
             )
             .expect("seal");
         let w = unlock_vault(vault, "vault password 123".into(), String::new()).expect("unlock");
@@ -1232,6 +1290,9 @@ mod tests {
         assert!(e.to_string().contains("real USDT"), "{e}");
         let v = w.policy_view(None, now).expect("view");
         assert!(v.limits.iter().all(|l| l.name.contains("REAL")));
+        // The waiting period chosen when the wallet was made.
+        assert_eq!(v.wait_minutes, 10);
+        assert!(w.policy_set_wait(None, 5, now).is_err()); // never under 10 min
     }
 
     fn hex_of(b: &[u8]) -> String {

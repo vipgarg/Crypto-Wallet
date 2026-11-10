@@ -27,18 +27,23 @@ const VERIFIED: { id: VerifiedBy; label: string }[] = [
   { id: "own_account_elsewhere", label: "My own account elsewhere (checked in its official app)" },
 ];
 
+function waitLabel(m: number): string {
+  if (m >= 60 && m % 60 === 0) return `${m / 60} hour${m === 60 ? "" : "s"}`;
+  return `${m} minute${m === 1 ? "" : "s"}`;
+}
+
 function when(secs: number): string {
   return new Date(secs * 1000).toLocaleString();
 }
 
-function Status({ e, hours }: { e: BookEntryView; hours: number }) {
+function Status({ e, wait }: { e: BookEntryView; wait: string }) {
   switch (e.usable.kind) {
     case "yes":
       return <span className="badge badge-verified">Usable</span>;
     case "waiting":
       return (
         <span className="badge badge-unverified">
-          Waiting period ({hours} h): usable from {when(e.usable.from)}
+          Waiting period ({wait}): usable from {when(e.usable.from)}
         </span>
       );
     case "unknown":
@@ -70,6 +75,16 @@ export function AddressBookPage() {
   const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
+
+  const changeWait = async (m: number) => {
+    setFormError(null);
+    try {
+      await api.setBookWait(m);
+      load();
+    } catch (e) {
+      setFormError(errorText(e));
+    }
+  };
 
   const load = () => {
     setError(null);
@@ -172,7 +187,7 @@ export function AddressBookPage() {
               </h3>
               <ChunkedAddress a={e.address} />
               <p>
-                <Status e={e} hours={view.waiting_hours} />
+                <Status e={e} wait={view.waiting_text} />
               </p>
               <dl>
                 <dt>May be paid from</dt>
@@ -209,8 +224,26 @@ export function AddressBookPage() {
             <h3>Add an address</h3>
             <p className="hint">
               Get the address from the recipient directly and verify it outside this computer (read it back on a phone
-              call, or send a small test amount first). A new address can be used only after a{" "}
-              {view.waiting_hours}-hour waiting period, which gives you time to notice a mistake or a scam.
+              call, or send a small test amount first). A new address can be used only after a waiting period
+              ({view.waiting_text}), which gives you time to notice a mistake or a scam.
+            </p>
+            <div className="toolbar">
+              <span className="muted">Waiting period:</span>
+              {[10, 60, 360, 1440].map((m) => (
+                <button
+                  type="button"
+                  key={m}
+                  className={view.waiting_text === waitLabel(m) ? "" : "secondary"}
+                  disabled={busy}
+                  onClick={() => void changeWait(m)}
+                >
+                  {waitLabel(m)}
+                </button>
+              ))}
+            </div>
+            <p className="hint">
+              Applies at once and is recorded in the audit log. Use 24 hours once real amounts are involved; the
+              tablet's own allowlist has its own waiting period, which a compromised PC can't change.
             </p>
             {formError && <p className="error">{formError}</p>}
             <label>

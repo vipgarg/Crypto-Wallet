@@ -82,6 +82,14 @@ pub struct Settings {
     /// confirmation). Older stores load with it off.
     #[serde(default)]
     pub real_sending: bool,
+    /// Address-book waiting period in minutes (10 to 1440). Older stores
+    /// load with 24 hours.
+    #[serde(default = "day_minutes")]
+    pub book_wait_minutes: u32,
+}
+
+fn day_minutes() -> u32 {
+    1440
 }
 
 impl Default for Settings {
@@ -89,6 +97,7 @@ impl Default for Settings {
         Self {
             bitcoin_enabled: true,
             real_sending: false,
+            book_wait_minutes: 1440,
         }
     }
 }

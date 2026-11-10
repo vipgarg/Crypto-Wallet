@@ -73,7 +73,7 @@ Wallet → **Test network (signet)** (Spending/Savings wallets): unlock with the
 
 ## Allowlist, limits and signing log
 
-Test networks → (unlock) → **Allowlist, limits and signing log**. The tablet signs only to addresses on this wallet's own list, after a waiting period (10 minutes on test networks, 24 hours on real ones), and only up to the daily limits, whatever the PC asks. Type addresses from the paper address book or scan them from the recipient's own device, never from the PC. Every signature is logged (hash-chained) before it is shown, and its log number goes to the PC, which warns if numbers were skipped. Details: docs/phase2-tron-testnet.md.
+Test networks → (unlock) → **Allowlist, limits and signing log**. The tablet signs only to addresses on this wallet's own list, after its waiting period, and only up to the daily limits, whatever the PC asks. Defaults: 10 minutes on test networks, 24 hours on real ones; a real wallet's waiting period is chosen when it is created (10 min to 24 h) and can be changed later (longer at once, shorter only after the current wait). Daily limits: Change → lowering applies at once, raising after the waiting period. Type addresses from the paper address book or scan them from the recipient's own device, never from the PC. Every signature is logged (hash-chained) before it is shown, and its log number goes to the PC, which warns if numbers were skipped. Details: docs/phase2-tron-testnet.md.
 
 **After updating the app:** add your test recipients to the allowlist and wait 10 minutes before the next test payment.
 

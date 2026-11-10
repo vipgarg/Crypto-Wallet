@@ -122,7 +122,8 @@ export interface AddressBookView {
   own: { label: string; network_name: string; address: string }[];
   revoked: { network: HistoryNetwork; address: string; label: string; removed_at: number }[];
   network_time: number | null;
-  waiting_hours: number;
+  /** e.g. "24 hours" or "10 minutes". */
+  waiting_text: string;
 }
 
 export interface NewBookEntry {
@@ -243,6 +244,8 @@ export interface Settings {
   bitcoin_enabled: boolean;
   /** Real-network sending (real money); off until switched on after the release gates. */
   real_sending: boolean;
+  /** Address-book waiting period (minutes). */
+  book_wait_minutes: number;
 }
 
 export interface NewWalletInput {
@@ -432,6 +435,7 @@ export const api = {
     call<PreparedEth>("prepare_eth_test_send", { id, recipient, amount, real }),
   finishEthTestSend: (signedQr: string) => call<EthSent>("finish_eth_test_send", { signedQr }),
   setBitcoinEnabled: (enabled: boolean) => call<Settings>("set_bitcoin_enabled", { enabled }),
+  setBookWait: (minutes: number) => call<Settings>("set_book_wait", { minutes }),
   setRealSending: (enabled: boolean, confirmation: string) =>
     call<Settings>("set_real_sending", { enabled, confirmation }),
   getAddressBook: () => call<AddressBookView>("get_address_book"),

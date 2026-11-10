@@ -56,6 +56,10 @@ struct VaultContents {
     /// older vaults: test wallet.
     #[serde(default)]
     real: bool,
+    /// Waiting period (minutes) a real wallet's policy starts with, chosen
+    /// when the wallet was made. Absent: 24 hours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    real_wait_minutes: Option<u32>,
 }
 
 /// An unlocked stored wallet: kept only for one signing session, then dropped
@@ -69,6 +73,8 @@ pub struct UnlockedWallet {
     pub seed: SeedMaterial,
     /// Real-network wallet (see `mode`).
     pub real: bool,
+    /// The real-network waiting period its policy starts with (minutes).
+    pub real_wait_minutes: Option<u32>,
 }
 
 /// What describes a stored wallet (everything except secrets).
@@ -79,6 +85,9 @@ pub struct WalletInfo {
     /// Derived with the passphrase the user chose (or "" for none).
     pub public: WalletPublic,
     pub uses_passphrase: bool,
+    /// For a real wallet: the waiting period its policy starts with
+    /// (10 to 1440 minutes; None = 24 hours). Ignored for test wallets.
+    pub real_wait_minutes: Option<u32>,
 }
 
 /// Encrypt a new stored wallet with its own vault password.
@@ -92,6 +101,15 @@ pub fn create(
         return Err(VaultError::VaultTierNotStored);
     }
     store::check_password_rule(vault_password).map_err(|e| VaultError::Store(e.into()))?;
+    if info
+        .real_wait_minutes
+        .is_some_and(|m| !(10..=1440).contains(&m))
+    {
+        return Err(VaultError::Store(
+            "the waiting period must be 10 to 1440 minutes".into(),
+        ));
+    }
+    let real = crate::mode::Mode::of_this_build() == crate::mode::Mode::Real;
     let key = store::derive_key(vault_password, &kdf)?;
     let contents = Zeroizing::new(
         serde_json::to_vec(&VaultContents {
@@ -102,7 +120,8 @@ pub fn create(
             entropy_hex: hex::encode(seed.entropy()),
             uses_passphrase: info.uses_passphrase,
             public: info.public.clone(),
-            real: crate::mode::Mode::of_this_build() == crate::mode::Mode::Real,
+            real,
+            real_wait_minutes: if real { info.real_wait_minutes } else { None },
         })
         .map_err(|e| VaultError::Store(e.to_string()))?,
     );
@@ -148,6 +167,7 @@ pub fn unlock(
         uses_passphrase: c.uses_passphrase,
         seed,
         real: c.real,
+        real_wait_minutes: c.real_wait_minutes,
     })
 }
 
@@ -170,6 +190,7 @@ mod tests {
             tier: Tier::Savings,
             public: public.clone(),
             uses_passphrase: true,
+            real_wait_minutes: None,
         };
         let file = create(&info, &seed, "vault password 123", fast_kdf()).expect("create");
         let text = String::from_utf8_lossy(&file);
@@ -203,6 +224,7 @@ mod tests {
             tier: Tier::Vault,
             public,
             uses_passphrase: true,
+            real_wait_minutes: None,
         };
         let r = create(&info, &seed, "vault password 123", fast_kdf());
         assert_eq!(r.map(|_| ()), Err(VaultError::VaultTierNotStored));

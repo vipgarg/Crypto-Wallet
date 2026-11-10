@@ -35,6 +35,7 @@
     "allow-get-settings",
     "allow-set-bitcoin-enabled",
     "allow-set-real-sending",
+    "allow-set-book-wait",
     "allow-get-nile-balances",
     "allow-prepare-tron-test-send",
     "allow-finish-tron-test-send",

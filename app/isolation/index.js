@@ -33,6 +33,7 @@ const ALLOWED = new Set([
   "get_settings",
   "set_bitcoin_enabled",
   "set_real_sending",
+  "set_book_wait",
   "get_nile_balances",
   "prepare_tron_test_send",
   "finish_tron_test_send",

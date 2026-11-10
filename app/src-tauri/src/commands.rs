@@ -26,7 +26,7 @@ use wallet_core::activity::{
     summarize_for, transactions_view, Known, KnownAddress, WalletActivity,
 };
 use wallet_core::address_book::{
-    network_time, usable, AddressBook, NewBookEntry, OwnAddress, Revoked, Usable, WAITING_SECS,
+    network_time, usable_after, AddressBook, NewBookEntry, OwnAddress, Revoked, Usable,
 };
 use wallet_core::btc_activity::{
     classify_btc, known_counterparties_btc, load_btc_history, MAX_PAGES_PER_ADDRESS,
@@ -673,10 +673,16 @@ pub struct AddressBookView {
     /// `None` when network time couldn't be confirmed (waiting periods then
     /// count as not over).
     network_time: Option<u64>,
-    waiting_hours: u64,
+    /// The waiting period, e.g. "24 hours" or "10 minutes".
+    waiting_text: String,
 }
 
-fn book_view(registry: &Registry, book: &AddressBook, now: Option<u64>) -> AddressBookView {
+fn book_view(
+    registry: &Registry,
+    book: &AddressBook,
+    now: Option<u64>,
+    wait_secs: u64,
+) -> AddressBookView {
     let mut own = Vec::new();
     for w in &registry.wallets {
         if let Some(a) = w.eth {
@@ -721,7 +727,7 @@ fn book_view(registry: &Registry, book: &AddressBook, now: Option<u64>) -> Addre
                 note: e.note.clone(),
                 tiers: e.tiers.iter().map(|t| t.display_name()).collect(),
                 added_at: e.added_at,
-                usable: usable(e, now),
+                usable: usable_after(e, now, wait_secs),
                 previously_removed_at: book
                     .revoked
                     .iter()
@@ -737,7 +743,7 @@ fn book_view(registry: &Registry, book: &AddressBook, now: Option<u64>) -> Addre
         own,
         revoked: book.revoked.clone(),
         network_time: now,
-        waiting_hours: WAITING_SECS / 3600,
+        waiting_text: wait_text(wait_secs / 60),
     }
 }
 
@@ -745,10 +751,11 @@ fn book_view(registry: &Registry, book: &AddressBook, now: Option<u64>) -> Addre
 pub async fn get_address_book(state: State<'_, AppState>) -> Result<AddressBookView, String> {
     // Login check first, so a locked app doesn't ask the network.
     state.session.with_book(false, |_, _| Ok(()))?;
+    let wait = book_wait_secs(&state)?;
     let now = current_network_time(&state).await;
     state
         .session
-        .with_book(false, |r, b| Ok(book_view(r, b, now)))
+        .with_book(false, |r, b| Ok(book_view(r, b, now, wait)))
 }
 
 #[tauri::command]
@@ -757,6 +764,7 @@ pub async fn add_address_book_entry(
     entry: NewBookEntry,
 ) -> Result<AddressBookView, String> {
     state.session.with_book(false, |_, _| Ok(()))?;
+    let wait = book_wait_secs(&state)?;
     if entry.network == Network::Bitcoin {
         require_bitcoin(&state)?;
     }
@@ -777,7 +785,7 @@ pub async fn add_address_book_entry(
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        Ok((book_view(r, b, Some(now)), detail))
+        Ok((book_view(r, b, Some(now), wait), detail))
     })?;
     state.session.audit().record(Event::AddressAdded, &detail);
     Ok(view)
@@ -792,6 +800,7 @@ pub async fn remove_address_book_entry(
         return Err("Unknown entry.".into());
     }
     state.session.with_book(false, |_, _| Ok(()))?;
+    let wait = book_wait_secs(&state)?;
     let now_net = current_network_time(&state).await;
     let pc_now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -802,7 +811,7 @@ pub async fn remove_address_book_entry(
             .remove(&id, now_net.unwrap_or(pc_now))
             .map_err(|e| e.to_string())?;
         Ok((
-            book_view(r, b, now_net),
+            book_view(r, b, now_net, wait),
             format!("{} ({})", e.id, e.network.display_name()),
         ))
     })?;
@@ -820,10 +829,11 @@ pub async fn rename_address_book_entry(
         return Err("Unknown entry.".into());
     }
     state.session.with_book(false, |_, _| Ok(()))?;
+    let wait = book_wait_secs(&state)?;
     let now = current_network_time(&state).await;
     let view = state.session.with_book(true, |r, b| {
         b.rename(&id, &label).map_err(|e| e.to_string())?;
-        Ok(book_view(r, b, now))
+        Ok(book_view(r, b, now, wait))
     })?;
     state
         .session
@@ -1484,6 +1494,46 @@ pub fn set_real_sending(
     Ok(s)
 }
 
+/// The address-book waiting period chosen in Settings, in seconds.
+fn book_wait_secs(state: &AppState) -> Result<u64, String> {
+    Ok(u64::from(state.session.settings()?.book_wait_minutes) * 60)
+}
+
+/// "24 hours", "1 hour", "10 minutes".
+fn wait_text(minutes: u64) -> String {
+    if minutes >= 60 && minutes.is_multiple_of(60) {
+        let h = minutes / 60;
+        format!("{h} hour{}", if h == 1 { "" } else { "s" })
+    } else {
+        format!("{minutes} minute{}", if minutes == 1 { "" } else { "s" })
+    }
+}
+
+/// Change the address-book waiting period (10 to 1440 minutes). Applies
+/// at once and is recorded in the audit log. (The tablet's own waiting
+/// period is the one a compromised PC can't get around.)
+#[tauri::command]
+pub fn set_book_wait(state: State<'_, AppState>, minutes: u32) -> Result<Settings, String> {
+    if !(10..=1440).contains(&minutes) {
+        return Err("Choose between 10 and 1440 minutes.".into());
+    }
+    let before = state.session.settings()?.book_wait_minutes;
+    let s = state
+        .session
+        .update_settings(|s| s.book_wait_minutes = minutes)?;
+    if before != minutes {
+        state.session.audit().record(
+            Event::SettingsChanged,
+            &format!(
+                "Address-book waiting period: {} → {}",
+                wait_text(u64::from(before)),
+                wait_text(u64::from(minutes))
+            ),
+        );
+    }
+    Ok(s)
+}
+
 /// Real money goes only to an address-book entry whose waiting period is
 /// over by network time (the tablet's own allowlist is checked as well).
 async fn require_book_entry(
@@ -1492,15 +1542,16 @@ async fn require_book_entry(
     address: &str,
 ) -> Result<(), String> {
     let now = current_network_time(state).await;
+    let wait = book_wait_secs(state)?;
     state.session.with_book(false, |_, b| {
         let e = b
             .entries
             .iter()
             .find(|e| e.network == network && e.address == address)
             .ok_or_else(|| {
-                "For real money, the recipient must be in the address book (and its 24-hour wait over).".to_owned()
+                "For real money, the recipient must be in the address book (and its waiting period over).".to_owned()
             })?;
-        match usable(e, now) {
+        match usable_after(e, now, wait) {
             Usable::Yes => Ok(()),
             _ => Err(format!(
                 "\"{}\" was added to the address book recently (or network time couldn't be confirmed); it can't be paid yet.",
@@ -1978,7 +2029,7 @@ mod tests {
         }
         assert_eq!(
             in_code.len(),
-            36,
+            37,
             "command count changed: review the new command, then update this test"
         );
         let lib = include_str!("lib.rs");

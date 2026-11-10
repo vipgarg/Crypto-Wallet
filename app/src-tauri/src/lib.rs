@@ -96,6 +96,7 @@ pub fn run() {
             commands::get_settings,
             commands::set_bitcoin_enabled,
             commands::set_real_sending,
+            commands::set_book_wait,
             commands::get_nile_balances,
             commands::prepare_tron_test_send,
             commands::finish_tron_test_send,

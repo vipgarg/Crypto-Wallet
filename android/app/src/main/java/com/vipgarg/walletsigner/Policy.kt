@@ -30,9 +30,15 @@ private sealed interface PolicyStep {
     data class ConfirmAdd(val net: String, val netName: String, val address: String) : PolicyStep
     data class Limit(val asset: String, val name: String, val unit: String, val daily: String) : PolicyStep
     data object Log : PolicyStep
+    data object Wait : PolicyStep
 }
 
 internal fun now(): ULong = System.currentTimeMillis().toULong()
+
+internal fun waitText(minutes: ULong): String = when {
+    minutes >= 60uL && minutes % 60uL == 0uL -> "${minutes / 60uL} hour" + if (minutes == 60uL) "" else "s"
+    else -> "$minutes minute" + if (minutes == 1uL) "" else "s"
+}
 
 private fun time(ms: ULong): String =
     SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault()).format(Date(ms.toLong()))
@@ -86,7 +92,14 @@ fun PolicyScreen(w: UnlockedWallet, entry: WalletEntry, store: WalletStore, onBa
 
     when (val s = step) {
         PolicyStep.Main -> {
-            Hint("The tablet signs only to addresses on this list, and only up to the daily limits, whatever the PC asks. New addresses and higher limits take effect after a waiting period (10 minutes on test networks; 24 hours on real ones).")
+            Hint("The tablet signs only to addresses on this list, and only up to the daily limits, whatever the PC asks. New addresses and higher limits take effect after this wallet's waiting period.")
+            Card {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Waiting period: ${waitText(v.waitMinutes)}", fontWeight = FontWeight.SemiBold)
+                    v.pendingWaitMinutes?.let { Hint("Shortening to ${waitText(it)} from ${time(v.pendingWaitFromMs)}", WARN) }
+                    OutlinedButton(onClick = { error = null; step = PolicyStep.Wait }) { Text("Change") }
+                }
+            }
             Text("Allowlist", fontWeight = FontWeight.SemiBold)
             if (v.addresses.isEmpty()) Hint("No addresses yet: nothing can be signed.")
             v.addresses.forEach { a ->
@@ -208,6 +221,19 @@ fun PolicyScreen(w: UnlockedWallet, entry: WalletEntry, store: WalletStore, onBa
                     if (change { w.policySetLimit(it, s.asset, amount, now()) }) step = PolicyStep.Main
                 }) { Text("Save") }
             }
+        }
+
+        PolicyStep.Wait -> {
+            Text("Waiting period", fontWeight = FontWeight.SemiBold)
+            Hint("How long a new address (or a higher daily limit) waits before it can be used. Now: ${waitText(v.waitMinutes)}. A longer wait applies at once. A shorter one applies only after the current wait has passed, so someone who learns your vault password can't remove it.")
+            val choices = if (entry.real) listOf(10uL, 60uL, 360uL, 1440uL) else listOf(1uL, 10uL, 60uL, 1440uL)
+            choices.forEach { m ->
+                OutlinedButton(onClick = {
+                    if (change { w.policySetWait(it, m, now()) }) step = PolicyStep.Main
+                }) { Text(waitText(m) + if (m == v.waitMinutes) " (current)" else "") }
+            }
+            error?.let { Hint(it, BAD) }
+            OutlinedButton(onClick = { error = null; step = PolicyStep.Main }) { Text("Cancel") }
         }
 
         PolicyStep.Log -> {

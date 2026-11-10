@@ -80,8 +80,10 @@ Everything below is built and **off**. Real-network signing needs all three swit
 1. On the real-network build, create the real wallets **fresh**, with new dice rolls (at least 99). Never reuse a test wallet's words: wallets from test builds can't sign real payments anyway.
 2. Write the words and passphrase on paper (two copies, two places). Run the word check.
 3. Add each wallet to the PC (webcam scan of the export QR). Compare fingerprint and addresses on both screens.
-4. On the tablet: Allowlist → add your recipients (typed from paper), wait 24 hours. Check the daily limits (start: 50 USDT / 50 TRX a day; raising also waits 24 hours).
-5. On the PC: add the same recipients to the address book (24-hour wait by network time).
+4. On the tablet: Allowlist → add your recipients (typed from paper), then wait out the wallet's waiting period. Check the daily limits (start: 50 USDT / 50 TRX a day; raising also waits).
+5. On the PC: add the same recipients to the address book (its waiting period, by network time).
+
+**Waiting periods for trials.** When you create a real wallet you choose its waiting period: 10 minutes, 1 hour, 6 hours or 24 hours (sealed in its vault). Small trial wallets can use 10 minutes; wallets that will hold savings should use 24 hours. Later, Allowlist → Waiting period → Change: longer applies at once, shorter only after the current wait (so a stolen vault password can't remove it). The PC address book's waiting period is set on the Address book page (10 minutes to 24 hours, applies at once, audit-logged). Set both back to 24 hours before moving larger amounts.
 
 ### Gate 3: switch on real-network signing
 

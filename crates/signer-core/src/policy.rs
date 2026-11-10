@@ -34,6 +34,12 @@ use thiserror::Error;
 pub const TEST_WAIT_MS: u64 = 10 * 60 * 1000;
 /// Waiting period on real networks.
 pub const REAL_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
+/// The waiting period the owner may choose: at least 10 minutes on real
+/// networks (1 minute on test networks), at most 24 hours. Making it longer
+/// applies at once; making it shorter only after the current wait.
+pub const MIN_REAL_WAIT_MS: u64 = 10 * 60 * 1000;
+pub const MIN_TEST_WAIT_MS: u64 = 60 * 1000;
+pub const MAX_WAIT_MS: u64 = REAL_WAIT_MS;
 /// The limit window (rolling).
 pub const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 /// How far the tablet clock may be behind the newest log entry.
@@ -108,6 +114,7 @@ impl Net {
     pub fn is_test(self) -> bool {
         matches!(self, Net::TronNile | Net::EthSepolia | Net::BtcSignet)
     }
+    /// The default waiting period (each wallet can choose its own).
     pub fn wait_ms(self) -> u64 {
         if self.is_test() {
             TEST_WAIT_MS
@@ -374,6 +381,37 @@ pub struct Policy {
     pub allow: Vec<AllowedAddress>,
     pub limits: BTreeMap<Asset, Limit>,
     pub log: Vec<LogEntry>,
+    /// Waiting period for new addresses and limit raises, test and real
+    /// networks. Absent (older files): the defaults. Default values are not
+    /// written, so files sealed before this field existed still verify.
+    #[serde(
+        default = "default_test_wait",
+        skip_serializing_if = "is_default_test_wait"
+    )]
+    pub test_wait_ms: u64,
+    #[serde(
+        default = "default_real_wait",
+        skip_serializing_if = "is_default_real_wait"
+    )]
+    pub real_wait_ms: u64,
+    /// A shorter wait waiting to take effect: (new wait, from when).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_test_wait: Option<(u64, u64)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_real_wait: Option<(u64, u64)>,
+}
+
+fn default_test_wait() -> u64 {
+    TEST_WAIT_MS
+}
+fn default_real_wait() -> u64 {
+    REAL_WAIT_MS
+}
+fn is_default_test_wait(v: &u64) -> bool {
+    *v == TEST_WAIT_MS
+}
+fn is_default_real_wait(v: &u64) -> bool {
+    *v == REAL_WAIT_MS
 }
 
 #[derive(Serialize, Deserialize)]
@@ -443,11 +481,26 @@ pub struct PolicyView {
     pub signed_total: u64,
     /// Hex head of the log ("" when empty).
     pub head: String,
+    /// Current waiting periods (minutes) and any shorter one pending.
+    pub test_wait_minutes: u64,
+    pub real_wait_minutes: u64,
+    pub pending_test_wait: Option<(u64, u64)>,
+    pub pending_real_wait: Option<(u64, u64)>,
 }
 
 impl Policy {
     pub fn new(wallet_id: &str, now_ms: u64) -> Self {
+        Self::new_with_real_wait(wallet_id, now_ms, REAL_WAIT_MS)
+    }
+
+    /// A new policy whose real-network waiting period was chosen when the
+    /// wallet was made (sealed in its vault).
+    pub fn new_with_real_wait(wallet_id: &str, now_ms: u64, real_wait_ms: u64) -> Self {
         Self {
+            test_wait_ms: TEST_WAIT_MS,
+            real_wait_ms: real_wait_ms.clamp(MIN_REAL_WAIT_MS, MAX_WAIT_MS),
+            pending_test_wait: None,
+            pending_real_wait: None,
             format: FORMAT,
             wallet_id: wallet_id.to_owned(),
             created_ms: now_ms,
@@ -475,8 +528,23 @@ impl Policy {
         wallet_id: &str,
         now_ms: u64,
     ) -> Result<Self, PolicyError> {
+        Self::open_with_real_wait(bytes, key, wallet_id, now_ms, REAL_WAIT_MS)
+    }
+
+    /// As `open`; a new policy starts with this real-network wait.
+    pub fn open_with_real_wait(
+        bytes: Option<&[u8]>,
+        key: &[u8; 32],
+        wallet_id: &str,
+        now_ms: u64,
+        initial_real_wait_ms: u64,
+    ) -> Result<Self, PolicyError> {
         let Some(bytes) = bytes else {
-            return Ok(Self::new(wallet_id, now_ms));
+            return Ok(Self::new_with_real_wait(
+                wallet_id,
+                now_ms,
+                initial_real_wait_ms,
+            ));
         };
         let s: Sealed = serde_json::from_slice(bytes).map_err(|_| PolicyError::Tampered)?;
         let body = serde_json::to_vec(&s.policy).map_err(|_| PolicyError::Tampered)?;
@@ -566,6 +634,7 @@ impl Policy {
     /// takes effect after the waiting period.
     pub fn set_limit(&mut self, asset: Asset, daily: u128, now_ms: u64) -> Result<(), PolicyError> {
         self.settle(now_ms);
+        let wait = self.wait_for(asset.net(), now_ms);
         let l = self.limits.entry(asset).or_insert_with(|| Limit {
             daily: asset.default_daily().to_string(),
             pending: None,
@@ -575,13 +644,71 @@ impl Policy {
             l.daily = daily.to_string();
             l.pending = None;
         } else {
-            l.pending = Some((daily.to_string(), now_ms + asset.net().wait_ms()));
+            l.pending = Some((daily.to_string(), now_ms + wait));
         }
         Ok(())
     }
 
-    /// Apply raises whose waiting period is over.
+    /// The waiting period that applies to `net` now.
+    pub fn wait_for(&self, net: Net, now_ms: u64) -> u64 {
+        let (current, pending) = if net.is_test() {
+            (self.test_wait_ms, self.pending_test_wait)
+        } else {
+            (self.real_wait_ms, self.pending_real_wait)
+        };
+        match pending {
+            Some((w, from)) if now_ms >= from => w,
+            _ => current,
+        }
+    }
+
+    /// Change the waiting period (minutes) for test or real networks.
+    /// Longer: at once. Shorter: after the current waiting period, so a
+    /// stolen vault password can't remove the wait.
+    pub fn set_wait(&mut self, real: bool, minutes: u64, now_ms: u64) -> Result<(), PolicyError> {
+        let ms = minutes.saturating_mul(60_000);
+        let min = if real {
+            MIN_REAL_WAIT_MS
+        } else {
+            MIN_TEST_WAIT_MS
+        };
+        if !(min..=MAX_WAIT_MS).contains(&ms) {
+            return invalid(format!(
+                "choose between {} and {} minutes",
+                min / 60_000,
+                MAX_WAIT_MS / 60_000
+            ));
+        }
+        self.settle(now_ms);
+        let net = if real { Net::Tron } else { Net::TronNile };
+        let current = self.wait_for(net, now_ms);
+        let (slot, pending) = if real {
+            (&mut self.real_wait_ms, &mut self.pending_real_wait)
+        } else {
+            (&mut self.test_wait_ms, &mut self.pending_test_wait)
+        };
+        if ms >= current {
+            *slot = ms;
+            *pending = None;
+        } else {
+            *pending = Some((ms, now_ms + current));
+        }
+        Ok(())
+    }
+
+    /// Apply raises (and shorter waits) whose waiting period is over.
     fn settle(&mut self, now_ms: u64) {
+        for (slot, pending) in [
+            (&mut self.test_wait_ms, &mut self.pending_test_wait),
+            (&mut self.real_wait_ms, &mut self.pending_real_wait),
+        ] {
+            if let Some((w, from)) = *pending {
+                if now_ms >= from {
+                    *slot = w;
+                    *pending = None;
+                }
+            }
+        }
         for l in self.limits.values_mut() {
             if let Some((v, from)) = &l.pending {
                 if now_ms >= *from {
@@ -626,10 +753,10 @@ impl Policy {
             return refuse(format!(
                 "the recipient isn't on this tablet's allowlist for {}. Add it on the tablet (Allowlist), check it against your paper address book, then wait {} minutes",
                 net.name(),
-                net.wait_ms() / 60_000
+                self.wait_for(net, now_ms) / 60_000
             ));
         };
-        let from = entry.added_ms + net.wait_ms();
+        let from = entry.added_ms + self.wait_for(net, now_ms);
         if now_ms < from {
             let mins = (from - now_ms).div_ceil(60_000);
             return refuse(format!(
@@ -694,7 +821,7 @@ impl Policy {
                 .allow
                 .iter()
                 .map(|a| {
-                    let from = a.added_ms + a.net.wait_ms();
+                    let from = a.added_ms + self.wait_for(a.net, now_ms);
                     AddressView {
                         net: a.net.code().into(),
                         net_name: a.net.name().into(),
@@ -742,6 +869,16 @@ impl Policy {
                 .collect(),
             signed_total: self.log.len() as u64,
             head: self.log.last().map(|e| e.hash.clone()).unwrap_or_default(),
+            test_wait_minutes: self.wait_for(Net::TronNile, now_ms) / 60_000,
+            real_wait_minutes: self.wait_for(Net::Tron, now_ms) / 60_000,
+            pending_test_wait: self
+                .pending_test_wait
+                .filter(|(_, f)| now_ms < *f)
+                .map(|(w, f)| (w / 60_000, f)),
+            pending_real_wait: self
+                .pending_real_wait
+                .filter(|(_, f)| now_ms < *f)
+                .map(|(w, f)| (w / 60_000, f)),
         }
     }
 }
@@ -942,5 +1079,76 @@ mod tests {
         assert!(a.parse_amount("-1").is_err());
         assert!(a.parse_amount("").is_err());
         assert_eq!(Asset::BtcSignet.parse_amount("0.01"), Ok(1_000_000));
+    }
+
+    #[test]
+    fn wait_longer_at_once_shorter_only_after_the_current_wait() {
+        let k = key();
+        let mut p = Policy::new("w1", T0);
+        // Real networks start at 24 hours.
+        assert_eq!(p.wait_for(Net::Tron, T0), REAL_WAIT_MS);
+        p.set_wait(true, 10, T0).expect("shorter");
+        assert_eq!(p.wait_for(Net::Tron, T0 + 60 * MIN), REAL_WAIT_MS);
+        assert_eq!(p.wait_for(Net::Tron, T0 + DAY_MS), 10 * MIN);
+        assert_eq!(p.view(T0).pending_real_wait, Some((10, T0 + DAY_MS)));
+        // Longer (here back to 24 h) applies at once and cancels the pending one.
+        p.set_wait(true, 1440, T0 + MIN).expect("longer");
+        assert_eq!(p.wait_for(Net::Tron, T0 + 2 * DAY_MS), REAL_WAIT_MS);
+        assert_eq!(p.pending_real_wait, None);
+        // From a 10-minute wait, 60 minutes is longer: at once.
+        let mut q = Policy::new_with_real_wait("w1", T0, 10 * MIN);
+        q.set_wait(true, 60, T0).expect("longer");
+        assert_eq!(q.wait_for(Net::Tron, T0), 60 * MIN);
+        // Bounds: never under 10 minutes on real networks, never over 24 hours.
+        assert!(p.set_wait(true, 5, T0).is_err());
+        assert!(p.set_wait(true, 1441, T0).is_err());
+        p.set_wait(false, 1, T0).expect("test 1 min"); // shorter: waits the current 10 min
+        assert_eq!(p.wait_for(Net::TronNile, T0 + 10 * MIN), MIN);
+        // The setting is sealed: changing it in the file is refused.
+        let bytes = p.seal(&k);
+        let back = Policy::open(Some(&bytes), &k, "w1", T0).expect("open");
+        assert_eq!(back, p);
+        let edited = String::from_utf8(bytes)
+            .expect("utf8")
+            .replace("\"pending_test_wait\":[60000", "\"pending_test_wait\":[1");
+        assert_eq!(
+            Policy::open(Some(edited.as_bytes()), &k, "w1", T0),
+            Err(PolicyError::Tampered)
+        );
+    }
+
+    #[test]
+    fn a_new_real_wallet_can_start_with_a_short_wait() {
+        let mut p = Policy::new_with_real_wait("w1", T0, 10 * MIN);
+        p.add_address(Net::Tron, BOB, "Bob", T0).expect("add");
+        let pay = Payment {
+            asset: Asset::UsdtTron,
+            recipient: BOB.into(),
+            amount: 1,
+        };
+        assert!(p.check(&pay, T0 + 9 * MIN).is_err());
+        p.check(&pay, T0 + 10 * MIN).expect("after 10 min");
+        // Raising a limit waits the same 10 minutes.
+        p.set_limit(Asset::UsdtTron, 500_000_000, T0)
+            .expect("raise");
+        assert_eq!(p.daily(Asset::UsdtTron, T0 + 10 * MIN), 500_000_000);
+        // Never shorter than 10 minutes, even if asked.
+        assert_eq!(
+            Policy::new_with_real_wait("w", T0, 0).real_wait_ms,
+            MIN_REAL_WAIT_MS
+        );
+    }
+
+    #[test]
+    fn files_sealed_before_the_wait_setting_still_open() {
+        // Default waits aren't written, so the sealed body is unchanged.
+        let k = key();
+        let p = with_bob();
+        let body = serde_json::to_string(&p).expect("json");
+        assert!(!body.contains("wait"));
+        assert_eq!(
+            Policy::open(Some(&p.seal(&k)), &k, "w1", T0).expect("open"),
+            p
+        );
     }
 }

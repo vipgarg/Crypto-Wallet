@@ -344,7 +344,12 @@ pub enum Usable {
 }
 
 pub fn usable(entry: &BookEntry, network_now: Option<u64>) -> Usable {
-    let from = entry.added_at.saturating_add(WAITING_SECS);
+    usable_after(entry, network_now, WAITING_SECS)
+}
+
+/// As `usable`, with the owner's chosen waiting period (seconds).
+pub fn usable_after(entry: &BookEntry, network_now: Option<u64>, wait_secs: u64) -> Usable {
+    let from = entry.added_at.saturating_add(wait_secs);
     match network_now {
         None => Usable::Unknown { from },
         Some(now) if now >= from => Usable::Yes,

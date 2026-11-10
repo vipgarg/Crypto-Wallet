@@ -528,7 +528,19 @@ private fun CreateWallet(
         Step.PASSWORD -> {
             var password by remember { mutableStateOf("") }
             var again by remember { mutableStateOf("") }
+            var realWait by remember { mutableStateOf(1440u) }
             Hint("Vault password for this wallet only (at least 12 characters). It encrypts the seed on this tablet.")
+            if (BuildConfig.REAL_NETWORKS) {
+                Text("Waiting period for new addresses and limit raises", fontWeight = FontWeight.SemiBold)
+                Hint("Sealed into this wallet. Short waits suit small trial wallets; use 24 hours for wallets that will hold real savings. Later you can lengthen it at once, or shorten it after the current wait.")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(10u, 60u, 360u, 1440u).forEach { m ->
+                        val label = waitText(m.toULong())
+                        if (m == realWait) Button(onClick = {}) { Text(label) }
+                        else OutlinedButton(onClick = { realWait = m }) { Text(label) }
+                    }
+                }
+            }
             SecretField(password, { password = it }, "Vault password")
             SecretField(again, { again = it }, "Vault password again")
             // Shown right above the button (the top of the screen may be scrolled away).
@@ -552,7 +564,7 @@ private fun CreateWallet(
                             withContext(Dispatchers.Default) {
                                 val pass = if (needsPassphrase) passphrase else ""
                                 val public = s.derivePublic(pass)
-                                val vault = s.sealVault(id, label, tier, public, needsPassphrase, pw)
+                                val vault = s.sealVault(id, label, tier, public, needsPassphrase, pw, realWait)
                                 val entry = WalletEntry(id, label, tier, needsPassphrase, public)
                                 store.save(entry, vault)
                                 entry
