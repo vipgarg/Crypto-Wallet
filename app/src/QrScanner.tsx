@@ -34,6 +34,31 @@ function cameraError(e: unknown): string {
   return cameraText(name) + (name ? ` (${name})` : "");
 }
 
+/** Read a QR code from a photo (e.g. taken with a phone and copied to the
+ * PC). Phone photos are large and the code may be small, so a few sizes are
+ * tried. The file is read only here; nothing is uploaded anywhere. */
+async function readQrFromFile(file: File): Promise<string | null> {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    const longest = Math.max(bitmap.width, bitmap.height);
+    for (const target of [1600, 1000, 2400, longest]) {
+      const scale = Math.min(1, target / longest);
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const found = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
+      if (found?.data) return found.data.trim();
+    }
+    return null;
+  } finally {
+    bitmap.close();
+  }
+}
+
 function savedCamera(): string | null {
   try {
     return window.localStorage.getItem(CAMERA_KEY);
@@ -70,6 +95,30 @@ export function QrScanner({
   const [cameraId, setCameraId] = useState<string | null>(savedCamera());
   const [info, setInfo] = useState<string>("");
   const [black, setBlack] = useState(false);
+  const [restart, setRestart] = useState(0);
+  const [photoMsg, setPhotoMsg] = useState<string | null>(null);
+
+  const loadPhoto = async (file: File | undefined) => {
+    if (!file) return;
+    setPhotoMsg("Reading the photo…");
+    try {
+      const text = await readQrFromFile(file);
+      if (!text) {
+        setPhotoMsg(
+          "No QR code found in that photo. Take it straight on, close enough that the code fills most of the picture, without glare.",
+        );
+        return;
+      }
+      if (!text.startsWith(prefix) || text.length > maxLength) {
+        setPhotoMsg(wrongHint);
+        return;
+      }
+      setPhotoMsg(null);
+      onResult(text);
+    } catch {
+      setPhotoMsg("That file couldn't be opened as a picture (use a JPG or PNG).");
+    }
+  };
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -194,13 +243,13 @@ export function QrScanner({
     startTimer = window.setTimeout(start, 150);
     return stop;
     // Restart when another camera is chosen; parents remount to scan again.
-  }, [cameraId]);
+  }, [cameraId, restart]);
 
   return (
     <div className="scanner">
       {error && <p className="error">{error}</p>}
       {!error && <video ref={videoRef} muted playsInline className="scanner-video" />}
-      {cameras.length > 1 && (
+      {cameras.length > 0 && (
         <label>
           Camera{" "}
           <select
@@ -237,6 +286,27 @@ export function QrScanner({
           </p>
         ))}
       {info && <p className="hint">{info}</p>}
+      <div className="button-row">
+        <button
+          className="secondary"
+          onClick={() => {
+            setCameras([]);
+            setRestart((n) => n + 1);
+          }}
+        >
+          Look for cameras again
+        </button>
+      </div>
+      <p className="hint">
+        No working webcam? Use your phone as one (Windows 11: Settings → Bluetooth &amp; devices → Mobile devices,
+        or DroidCam), then press “Look for cameras again” and choose it above. Or take a photo of the tablet's QR code
+        with your phone, copy it to this PC, and load it here:
+      </p>
+      <label>
+        Load a photo of the QR code{" "}
+        <input type="file" accept="image/png,image/jpeg,image/webp,image/bmp" onChange={(e) => void loadPhoto(e.target.files?.[0])} />
+      </label>
+      {photoMsg && <p className="warning">{photoMsg}</p>}
       <button className="secondary" onClick={onCancel}>
         Cancel (turns the camera off)
       </button>
